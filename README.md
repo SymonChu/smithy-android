@@ -1,39 +1,128 @@
 # Smithy
 
-> 手机上的 APK 工程工作台 + AI 助手 —— 拆包、改造、重铸、装机，全在一台手机上闭环。
+> 手机上的 APK 工程工作台 + AI 助手 —— 拆包、改造、重铸、装机，在一台手机上闭环。
 
-**状态：设计阶段**（本仓库当前只有设计文档、依赖清单与核心接口定义，尚无可用构建）
+**状态：M0（骨架已可构建，功能开发中）** — 工程可编译出 APK、CI 全绿；解析与改包功能正在实现。
 
-## 它是什么
+---
 
-一个 Android App，把三件事合在一起：
+## 它解决什么
 
-1. **改包链路**（借鉴 MT管理器）：解包 → 改 smali/资源 → 回编 → 签名 → 装机，不用电脑
-2. **零门槛改包**（借鉴 CAssistant）：全维度解析报告、图标/文案/包名可视化批量替换
-3. **AI 原生**（借鉴 CodeForge）：AI 不是聊天窗，而是直接调用 `dex.search_string` / `smali.patch` / `apk.rebuild` / `apk.install` 干活，写操作前有门控确认
+在手机上改一个 APK，现在的做法是：用 MT管理器拆包改 smali，用 CAssistant 换个图标，想跑个 AI 又得把包传到电脑。Smithy 把这三件事合成一个 App，并且**让 AI 直接动手**而不是只在旁边聊天。
 
-### 两个关键设计
+---
 
-- **AI 与手动共用同一套 Tool**：AI 改了什么，用户在「改动」列表里看到同样的 diff，并能单次回退。不存在"AI 偷偷改了东西"。
-- **工具集以 MCP 服务端暴露**：App 内置的 APK 能力（`127.0.0.1/mcp`）可被外部 AI（Claude / Cursor / Trae）接入；同时它自己也是 MCP 客户端，能挂 Frida、抓包等外部工具。
+## 功能
+
+### 一、APK 解析（M0）
+
+打开一个 APK 就得到完整画像：
+
+- **基本信息** — 包名、版本号/版本名、minSdk / targetSdk、大小、dex 数量
+- **权限与组件** — 全部声明权限；Activity / Service / Receiver / Provider 列表，标出**已导出**的和带 IntentFilter 的
+- **签名** — v1/v2/v3 方案、证书主体与颁发者、MD5 / SHA1 / SHA256 指纹、是否 debug 签名
+- **DEX 统计** — 每个 dex 的类数 / 方法数 / 字符串数，方法数超 65536 预警
+- **加固识别** — 常见壳的特征匹配与置信度（不是猜，给证据）
+- **结构浏览** — dex / res / assets / lib / META-INF，直接操作 zip 内部，不解压
+
+### 二、代码层编辑（M1）
+
+- **DEX 搜索** — 按类名 / 方法名 / 字符串 / 方法调用（支持正则）。最常用的是搜硬编码的 URL、密钥、文案
+- **交叉引用** — 找"谁调用了这个方法"
+- **反编译看 Java** — 单类按需反编译（不全量，手机上全量必 OOM）
+- **smali 查看与编辑** — 语法高亮、按方法跳转、精确改写
+- **批量改 smali** — 正则替换、批量删类
+
+### 三、资源层编辑（M2）
+
+- **改应用名 / 包名 / 版本号** — 一步到位
+- **换图标** — 给一张图，自动生成 mdpi ~ xxxhdpi 全套 + adaptive icon
+- **批量换文案** — ARSC 字符串表 + 布局 XML 一起替换，支持正则
+- **批量换图片 / 改颜色 / 替换 assets**
+- **AXML 编辑** — 二进制 XML 解码、改属性（如 debuggable、exported）
+
+### 四、打包链路（M1）
+
+- **重打包** — 增量回编（没改过的条目复用原字节，改一个字不必重编全部资源）
+- **对齐** — zipalign 等价实现
+- **签名** — v1/v2/v3；内置 keystore 自动生成，也可导入你自己的
+- **装机** — Shizuku 静默安装 → Root → 系统安装器三级降级
+- **进度可见** — 解析资源 → 汇编 smali → 打包 → 对齐 → 签名，分阶段可取消
+
+### 五、改动管理（M1，别家没有的）
+
+每次修改都留一条记录：改了什么、谁改的（你或 AI）、AI 为什么改、前后 diff。
+
+- **单次回退** — 不是"全部撤销"，是精确回退某一次改动
+- **改动配方** — 把一串改动存成配方，下次对同版本包一键复用
+- **AI 与手动共用同一套** — AI 改了什么，你在同一个列表里看到同样的 diff 并能回退，不存在"AI 偷偷改了东西"
+
+### 六、AI 助手（M3）
+
+- **Agent 循环** — 多轮工具调用、流式输出、随时可中断
+- **门控确认** — 写操作前 AI 必须说明"要做什么、影响什么"，你回 GO 才执行；可切只读模式
+- **自定义模型** — 任意 OpenAI 兼容端点，多套配置随时切换，可指定便宜的"总结模型"降成本
+- **多会话 + 记忆** — 会话独立上下文，超长自动压缩；跨会话长期记忆（全局 / 项目 / 会话三级）
+- **角色预设** — 代码审查员、架构师、前端专家…不同系统提示词与工具权限
+
+### 七、开放接口（M3）
+
+- **把自身能力做成 MCP 服务端** — App 内起 `127.0.0.1/mcp`，暴露 `apk.*` / `dex.*` / `smali.*` / `arsc.*` 等语义化工具。**外部 AI（Claude / Cursor / Trae）可以直接调用它来改包**——相当于把 MT管理器那套 MCP 开源化
+- **同时是 MCP 客户端** — 可挂 Frida、抓包、数据库等外部 MCP
+- 工具粒度是语义化的（`dex.search_string`、`smali.patch`、`apk.rebuild`），不给 AI 万能 shell 口子
+
+### 八、文件管理（M4）
+
+- **双窗口** — 上下两栏，目录同步滚动、路径一键对齐、一键交换
+- **zip / apk 内部直接增删改** — 不解压再打包
+- **编辑器** — smali / XML / JSON 语法高亮、大文件、正则搜索替换、编码自动识别
+- **批量重命名、哈希计算、文件属性、文本对比**
+
+### 九、可选模块（M5，按需下载）
+
+不装任何模块时 App < 40MB。需要时才下：
+
+- **Linux rootfs（Alpine）** → 跑 apktool / jadx CLI，处理原生引擎搞不定的畸形包（兜底路径）
+- **构建模块（JDK + Gradle）** → 在手机上编译完整安卓项目
+- **本地模型** — llama.cpp + GGUF，离线推理
+- **Cloudflare 隧道** — 把手机上跑的服务暴露到公网做演示
+- **语音** — Vosk 离线识别 + TTS 朗读，连续对话
+- **定时任务** — cron 表达式定时跑 AI 任务（如每天检查某个包有无更新）
+
+---
+
+## 开发状态
+
+| 模块 | 状态 |
+|---|---|
+| 工程骨架 / Gradle 多模块 / CI | ✅ 可用（`assembleDebug` 出 APK，CI 全绿） |
+| 设计文档 + 四个核心接口 | ✅ 完成 |
+| APK 解析与报告页 | 🚧 M0 进行中 |
+| 代码层编辑 / 打包签名装机 / 改动管理 | 📋 M1 |
+| 资源层 / 可视化改包 | 📋 M2 |
+| AI 层（Agent / 门控 / MCP） | 📋 M3 |
+| 文件管理 / 编辑器 | 📋 M4 |
+| 可选模块 | 📋 M5 |
+
+---
 
 ## 技术要点
 
-- **纯 Java 引擎，不需要内置 Linux 环境**：`ARSCLib` + `APKEditor` + `smali/dexlib2` + `jadx-core(Android 版)` + `apksig-android` 直接在 Android 进程内完成解包/回编/签名，App 体积目标 < 40MB（对比同类方案动辄 2-3GB 的内置 rootfs）
-- 解包/回编/签名跑在独立 `:worker` 进程，避免主进程 OOM
-- 增量回编：未改动的条目复用原字节，改一个字符串不必重编全部资源
+- **纯 Java 引擎，不内置 Linux 环境**：`ARSCLib` + `APKEditor` + `smali/dexlib2` + `jadx-core(Android 版)` + `apksig-android` 直接在 Android 进程内完成解包 / 回编 / 签名。体积目标 < 40MB（同类方案常内置 2-3GB rootfs）
+- **重活跑独立进程**：解包 / 汇编 smali / 回编 / 签名在 `:worker` 进程执行，拿独立堆上限，主进程不会因大包 OOM 被杀
+- **增量回编**：未改动条目复用原字节
 
 ## 目录
 
 ```
 docs/          设计文档（从 docs/README.md 进）
-core/engine    APK 引擎：解包/回编/签名/资源/DEX（纯 Java，可 JVM 单测）
+core/engine    APK 引擎：解包/回编/签名/资源/DEX（不 import android.*）
 core/fs        文件与 zip 抽象
 core/ai        Agent 循环、模型客户端、上下文压缩、记忆
 core/mcp       MCP 服务端 + 客户端
 toolkit        语义化工具集（UI 与 AI 共用的唯一入口）
 feature/*      APK 工作台 / 文件管理 / 对话 / 设置
-gradle/libs.versions.toml   依赖与版本（标注了哪些版本已核实、哪些待核）
+gradle/libs.versions.toml   依赖与版本
 ```
 
 ## 构建
@@ -42,26 +131,21 @@ gradle/libs.versions.toml   依赖与版本（标注了哪些版本已核实、�
 
 ```bash
 ./gradlew :app:assembleDebug        # 出 debug APK
-./gradlew :core:engine:test         # 引擎层是纯 JVM 模块，可脱离 Android 单测
+./gradlew :core:engine:testDebugUnitTest   # 引擎单元测试（JVM 上跑，不需要设备）
 ```
 
 首次构建会拉 AGP / Kotlin / Compose / ARSCLib 等依赖（几百 MB）。
 
-`app` 模块与工程骨架已就位（M0 的骨架部分）；功能实现进度见 `docs/06-milestones.md`。
-
 ## 贡献
 
-- 提交 PR 前请先开 issue 对齐设计，避免大改动返工
-- **首次贡献需要签署 CLA**（见 `CONTRIBUTING.md`）—— 用于保留将来双授权的可能，请在动手前确认你接受这一点
-- 引擎层是纯 Java，优先级最高的贡献是**兼容性用例**：附上"打不开的包"和期望行为
+- 提交 PR 前先开 issue 对齐设计，避免大改动返工
+- **引擎接口（`Tool` / `ApkProject` / `PatchRecord` / `WorkspaceState`）的改动必须先讨论**——UI 层与 AI 层同时依赖它们
+- **首次贡献需要签署 CLA**（见 [CONTRIBUTING.md](CONTRIBUTING.md)）
+- 最有价值的贡献是**兼容性用例**：附上打不开 / 回编失败 / 装机闪退的包（可脱敏）+ 错误日志
 
 ## 许可
 
-**GPL-3.0**（见 [LICENSE](LICENSE)）。
-
-选它的原因：本项目直接借鉴了同样以 GPL-3.0 发布的 `AppManager` 等项目的实现，且这类工具被盗版闭源转卖的动机很高。
-
-第三方组件许可（Apache-2.0 / BSD-3 / LGPL-2.1 等）在 App 内「开源许可」页由 `AboutLibraries` 自动生成。
+**GPL-3.0**（见 [LICENSE](LICENSE)）。第三方组件（Apache-2.0 / BSD-3 / LGPL-2.1 等）的许可在 App 内「开源许可」页由 `AboutLibraries` 生成。
 
 ## 合规声明
 
