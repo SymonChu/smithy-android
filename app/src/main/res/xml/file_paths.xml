@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 工作区产物通过 FileProvider 交给系统安装器 -->
+    <files-path name="workspaces" path="workspaces/" />
+    <cache-path name="cache" path="." />
+    <external-files-path name="external_files" path="." />
+</paths>

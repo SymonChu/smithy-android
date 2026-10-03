@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 应用只需要一个基础主题，真正的样式在 Compose 里 -->
+    <style name="Theme.Smithy" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/background_light</item>
+    </style>
+</resources>

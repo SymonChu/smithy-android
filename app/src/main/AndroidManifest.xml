@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 读写项目文件与改包产物：Android 11+ 需要「所有文件访问权限」 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
+    <!-- AI 模型 API / MCP -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 静默安装（降级路径为系统安装 Intent） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- 长任务前台服务 + 通知（定时任务、构建、隧道保活） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 可选：AI 运行状态悬浮窗 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- 可选：语音对话 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:name=".SmithyApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Smithy"
+        tools:targetApi="34">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 从文件管理器「打开方式」直接进入 APK 工程 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+                <data android:mimeType="application/zip" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          重活跑在独立进程：解包 / 汇编 smali / 回编 / 签名。
+          目的：拿到独立堆上限，主进程不再因大包 OOM 被杀。
+        -->
+        <service
+            android:name=".worker.EngineService"
+            android:exported="false"
+            android:process=":worker" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>
