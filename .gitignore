@@ -25,5 +25,8 @@ workspaces/
 .DS_Store
 Thumbs.db
 
+# Kotlin 编译器的会话文件（每次编译都变，不该入库）
+.kotlin/
+
 # 日志
 *.log

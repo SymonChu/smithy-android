@@ -131,3 +131,70 @@ null 产生在库更深处，**外部无法修正**。
 
 **通用教训**：自己写 zip 时，凡是"声明出来的长度"都要有断言或单一来源兜住，
 否则错误会以"内容看起来对、位置却错了"的形式出现，比 outright 崩溃难查得多。
+
+---
+
+## 九、Shizuku 装机：一次核查不完整导致的错误结论
+
+**先记这个错误，因为它比结论本身更值得记住。**
+
+**当时的结论**：Shizuku 13.x 移除了 `newProcess`，静默装包只能走 `IPackageInstaller`
+的 session 流程（hidden API，得自己写逐版本匹配的 AIDL），无法在无真机的条件下验证 → 不做。
+
+**为什么错**：只查了 `rikka.shizuku.Shizuku` 这个**门面类**，没查 Shizuku **服务本身的 AIDL 接口**。
+
+```java
+// moe.shizuku.server.IShizukuService —— stub 就在 dev.rikka.shizuku:aidl 里
+public abstract IRemoteProcess newProcess(String[] cmd, String[] env, String dir);
+```
+
+**`newProcess` 一直还在服务接口上。** 13.x 做的只是把它从门面类拿掉
+（`ShizukuRemoteProcess` 的构造器也变成了包私有），于是「以 shell 身份跑一条命令」这件事
+从「调一行静态方法」退化成「拿服务句柄再调」：
+
+```kotlin
+val service = IShizukuService.Stub.asInterface(Shizuku.getBinder())
+val proc = service.newProcess(arrayOf("pm", "install", "-r", "-d", "-S", size), null, null)
+```
+
+于是既不用写 hidden API 的 AIDL，也不用碰 `IPackageInstaller`。
+
+### 教训（可复用）
+
+**门面类少了一个方法，不等于底层能力消失了。**
+
+判断「某个能力还能不能用」时，要查到**服务接口 / AIDL 那一层**再下结论。
+门面类是便利封装，被裁剪掉的往往只是「暴露方式」，不是「实现」。
+这次如果按错误结论去做，得绕一大圈写 AIDL、还没有真机可验证；
+按正确路径做，只是多引一个 `shizuku-aidl` 依赖。
+
+### 实现里的两个细节
+
+1. **用 `pm install -S <字节数>` 从 stdin 送包，不要传文件路径。**
+   `pm install <path>` 的路径最终由 PackageManagerService 打开，
+   而 shell 域读 app 私有目录（`/data/user/0/<pkg>/...`）在 SELinux 下可能被拦。
+   流式送包绕开这一点，也省掉一次大文件拷贝。写完 stdin 必须关闭流，
+   否则 `pm` 收不到 EOF、会一直等。
+2. **`-r` 和 `-d` 两个开关都要。**
+   `-r` 覆盖安装（改包后包名不变，必须能覆盖）；
+   `-d` 允许降级 —— 改完的包 versionCode 常常没变甚至更低，不加会被系统拒。
+
+### 仍未验证的部分（M1 唯一没有测试兜底的一段）
+
+装机三条通道都要真机才能验：Shizuku 的授权流程（`Shizuku.requestPermission` 需要
+requestCode 与 Activity 回调）、`pm install` 在具体设备上的行为、以及各家 ROM 的 SELinux 差异。
+代码路径是完整的，降级逻辑有单测（`InstallTest` 用假通道把顺序钉死了），
+但「真机上能不能装上」这件事没有自动测试覆盖 —— 需要一次真机验收。
+
+### 已核实的事实（省得下次再查）
+
+- `rikka.shizuku.Shizuku` 13.1.5 门面类**没有** `newProcess`，公开能力只有
+  `pingBinder` / `checkSelfPermission` / `requestPermission` / `getUid` / `getVersion` /
+  `isPreV11` / `getBinder` / `transactRemote(Parcel, Parcel, int)` / `SystemServiceHelper.getSystemService(String)`
+- 但 `moe.shizuku.server.IShizukuService`（在 `dev.rikka.shizuku:aidl` 里）**有**
+  `newProcess(String[], String[], String) → IRemoteProcess`，
+  `IRemoteProcess` 提供 `waitFor` / `exitValue` / `getInputStream` / `getOutputStream` / `getErrorStream`
+- `ShizukuRemoteProcess` 的构造器是包私有的（所以别想着直接 new 它，用 `IRemoteProcess` 的接口即可）
+- libsu 侧可用，`Shell.cmd("pm install ...").exec()` 的 `Result.isSuccess` 判断成败
+
+

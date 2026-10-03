@@ -27,7 +27,8 @@
 3. `smali.read_class/read_method/patch/replace_string` + PatchRecord 落库
 4. `apk.rebuild`（增量：未改动 entry 复用原字节）+ `apk.align`
 5. `apk.sign`（apksig-android，v1/v2/v3，内置 keystore 自动生成）
-6. Shizuku 集成 + `apk.install`
+6. Shizuku 集成 + `apk.install` —— **已实现**：引擎定降级顺序（Shizuku → Root → 系统安装器），
+   App 层给三条通道。Shizuku 走 `IShizukuService.newProcess` + `pm install -S`，见 `docs/08` 第九节
 7. 工作台「代码」标签 + 「改动」标签（diff 视图、单次回退）
 
 **验收**：搜到某 App 的开屏文案 → 改掉 → 重打包 → 签名 → 用 Shizuku 静默装回手机 → 启动看到新文案。全程不碰电脑，单个操作 60 秒内完成（50MB 包）。
