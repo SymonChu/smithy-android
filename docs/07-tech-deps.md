@@ -48,6 +48,31 @@
 | 本地模型（可选） | llama.cpp（NDK 编译）或 `llama.rn` 思路 | MIT |
 | 语音（可选） | `com.alphacephei:vosk-android` | Apache-2.0 |
 
+## 模块工程层（M6）
+
+| 用途 | 选型 | 许可 | 备注 |
+|---|---|---|---|
+| 模块刷入 / root shell | `com.github.topjohnwu.libsu:core`（已在基础层） | Apache-2.0 | 模块场景**必须 root**，Shizuku 不适用 |
+| zip 读写 | JDK 自带 `java.util.zip` | — | 模块 zip 就是普通 deflate zip，无特殊结构要求 |
+| ELF 解析 | 自研最小实现（ELF 头 + 节表 + 字符串表，32/64 位小端） | 自有 | 只做只读检视与**等长**字符串替换；不引第三方 binutils |
+| 刷入目标约定 | `module.prop` / `zygisk/<abi>.so` / `disable` / `remove` 标记 | — | Magisk 模块规范，非依赖 |
+| Zygisk API 头 | `zygisk.hpp`（来自官方模块样例工程） | **0BSD** | **已核实**：措辞为 "permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted"，最宽松档，**与 GPL-3.0 完全兼容**。分发须保留版权声明，且头文件内明写 `DO NOT MODIFY ANY CODE IN THIS HEADER` |
+| native 编译（M6-B，可选模块） | clang + Android sysroot + libc++ | Apache-2.0 with LLVM exception | 约 300-400MB，按需下载，不进主包 |
+
+**Zygisk API 版本对应**（写模板时需声明并在编译期校验）：
+
+| API | 最低 Magisk |
+|---|---|
+| v5 | 27000 |
+| v4 | 26000 |
+| v3 | 24300 |
+| v2 | 24000 |
+
+**设备侧前置条件（M6 开工前先做兼容性矩阵）**：
+- Magisk 内置 Zygisk：Magisk 27+ 自带，设置里开关
+- 独立实现（Zygisk Next / ReZygisk）：KernelSU ≥ 10940（ksud ≥ 11575）；Magisk ≥ 26402 且**必须关闭内置 Zygisk**
+- 仅 Shizuku、无 Root：**Zygisk 模块无法工作**，工具须明确报错而非静默失败
+
 ---
 
 ## ⚠️ 许可证：开工前第一个必须定的事

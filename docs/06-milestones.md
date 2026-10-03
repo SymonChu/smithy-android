@@ -74,18 +74,86 @@
 
 ## M5 · 平台化（持续）
 
-可选模块：rootfs（Alpine，跑 apktool/任意 CLI）、构建模块（JDK+Gradle）、隧道（cloudflared）、本地模型（llama.cpp）、语音（Vosk+TTS）、定时任务、MCP 服务端对外、插件系统。
+可选模块：rootfs（Alpine，跑 apktool/任意 CLI）、构建模块（JDK+Gradle）、native 构建模块（clang+sysroot，见 M6-B）、隧道（cloudflared）、本地模型（llama.cpp）、语音（Vosk+TTS）、定时任务、MCP 服务端对外、插件系统。
 
 **验收**：模块可独立下载/卸载，不装模块时 App 体积 < 40MB。
+
+---
+
+## M6 · 模块工程（Magisk / Zygisk）（2 周）
+
+> 编号排在 M5 之后，只表示它**不在 MVP 关键路径上**，不表示最晚做。它只依赖 M1 的归档与装机能力，可在 M2 之后的任意时点插入，不阻塞其他里程碑。
+
+**交付物**：工作台能处理 APK 之外的另一种包——刷机模块。
+
+**先看清楚一个 Zygisk 模块是什么**（来自官方样例工程的布局）：
+
+```
+<module_id>/
+├── module.prop          纯文本：id / name / version / versionCode / author / description
+└── zygisk/
+    ├── arm64-v8a.so     ← Magisk 按【文件名】匹配 ABI，不是 lib<name>.so
+    ├── armeabi-v7a.so
+    ├── x86.so
+    └── x86_64.so
+```
+
+可选部分：`service.sh` / `post-fs-data.sh`（开机脚本）、`system/`（overlay）、`system.prop`、`sepolicy.rule`、`customize.sh`（安装期脚本）；目录里放一个空文件 `disable` 即停用，放 `remove` 即卸载。
+
+**任务（A 档：结构层）**
+1. `archive.list/read/write/delete` —— zip 通用读写，模块与 APK 共用底层
+2. `module.inspect` —— 用 `module.prop` 判定模块、用 `zygisk/*.so` 判定 Zygisk 模块；解析元数据、列出脚本与 ABI 覆盖，并与设备实际 ABI 比对（缺当前 ABI 的 .so 要显式警告）
+3. `module.prop` 结构化编辑 —— 改 id / 名称 / 版本 / 描述；改 id 时校验目录名与 id 一致
+4. `module.package` —— 按模块规范布局重打包成可刷 zip
+5. 脚本与配置编辑 —— `service.sh` / `post-fs-data.sh` / `system.prop` / `sepolicy.rule` / `customize.sh`
+6. `module.install` —— 走 **Root 通道**刷入。**此场景 Shizuku 权限不足，只有 Root 一档有效**；含 `module.enable/disable`（增删 `disable` 标记文件）
+7. `zygote.restart` —— 软重启使模块生效；**DESTRUCTIVE 门控 + 显式确认**，并提示会影响所有正在运行的应用
+8. `elf.inspect` + `elf.patch_string` —— 解析 ELF 节表与字符串表，展示架构 / 依赖 / 字符串常量；替换**强制等长**，变长直接拒绝
+9. 工作台新增「模块」标签：元数据、文件树、脚本编辑、ABI 覆盖表
+
+**A 档明确不做**
+- **改 `.so` 的逻辑**（反汇编 → 改 → 回编）：逆向产物没有源码语义，回编不成立，不做半成品
+- **变长字符串替换**：会破坏 ELF 内的偏移引用与段布局，风险远大于收益；正确路径是源码重编（M6-B）
+- **改动 `zygisk.hpp` 本身**：头文件里明写 `DO NOT MODIFY ANY CODE IN THIS HEADER`
+
+**验收**
+- 解出一个 Zygisk 模块 → 改 `module.prop` 的版本与描述、改 `service.sh` 里一行 → 重打包 → 刷入 → 软重启 → 模块列表显示新版本且脚本确实生效
+- 等长字符串替换后模块仍能正常加载，ABI 目录结构未被破坏
+- 变长替换被明确拒绝，并提示走源码重编
+- 设备无 Root 时，所有写操作给出明确原因，而不是静默失败
+- Xposed 模块（本质是 APK）走 M1 链路即可完成，不需要 M6 的能力
+
+---
+
+## M6-B · native 编译（可选模块，归入 M5 下载项）
+
+改模块逻辑的唯一正当路径是**改源码重编**，不是二进制硬改。
+
+**任务**
+1. 以 M5 的「构建模块」为底座，追加 `clang` + Android `sysroot` + `libc++`（约 300-400MB，按需下载，不进主包）
+2. 附 Zygisk 模块骨架模板：`module.prop` + `CMakeLists.txt` + `zygisk.hpp`（0BSD）+ 最小 `ModuleBase` 实现
+3. 目标 ABI 以 `arm64-v8a` 为主
+4. 模板声明所依赖的 Zygisk API 版本并在编译期校验（v5 → Magisk 27000+，v4 → 26000+，v3 → 24300+）
+5. 分发 `zygisk.hpp` 时保留原版权声明、不改动内容
+
+**验收**：从模板起一个模块 → 改一行 hook 目标 → 编译出 `arm64-v8a.so` → 打包 → 刷入 → 重启生效，全程在手机上完成。
+
+**开工前先做设备兼容性矩阵**（这是 M6 的主要失败面）
+- Magisk 内置 Zygisk：Magisk 27+ 自带，设置里开关
+- 独立实现（Zygisk Next / ReZygisk）：KernelSU ≥ 10940（ksud ≥ 11575）；Magisk ≥ 26402 且**必须关闭内置 Zygisk**
+- 仅有 Shizuku、无 Root：**Zygisk 模块无法工作**，工具要明确报错而不是静默失败
 
 ---
 
 ## 关键路径与风险点
 
 ```
-M0(骨架) → M1(引擎+装机) → M2(资源) → M3(AI)
-                ↑
-        最大不确定性：ARSCLib/APKEditor 在 Android 上的长尾兼容
+M0(骨架) → M1(引擎+装机) → M2(资源) → M3(AI) → M4(文件管理) → M5(平台化)
+              │
+              └──────→ M6(模块工程)     ← 只依赖 M1，不阻塞也不被阻塞
+              ↑
+      最大不确定性：ARSCLib/APKEditor 在 Android 上的长尾兼容
 ```
 - 若 M1 的 rebuild 在某些包上失败率 > 20%，**立即插入 M1.5**：接 rootfs+apktool 作为兜底路径（这时 rootfs 从 P2 提前）
 - M3 依赖 M0-M2 的稳定工具接口，所以**先定 Tool 接口再写实现**，别边写边改签名
+- M6 的最大不确定性是**目标设备的 root 方案差异**（内置 Zygisk / 独立实现 / 无 Root 三种环境行为不同），先搭兼容性矩阵再写工具

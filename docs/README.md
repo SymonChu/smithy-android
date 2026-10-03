@@ -12,7 +12,7 @@
 | [03-data-model](03-data-model.md) | 领域实体、Room 表、工作区目录、状态机 | 动手前 |
 | [04-mcp-tools](04-mcp-tools.md) | 工具集清单与设计原则 | 写 toolkit 时 |
 | [05-ui](05-ui.md) | 四个 Tab 的结构与关键交互 | 写 UI 时 |
-| [06-milestones](06-milestones.md) | M0~M5 任务与验收标准 | 排期时 |
+| [06-milestones](06-milestones.md) | M0~M6 任务与验收标准 | 排期时 |
 | [07-tech-deps](07-tech-deps.md) | 依赖坐标 + 许可证合规 | 建工程时 |
 | [08-risks](08-risks.md) | 风险、未知、**待你决策的 6 个问题** | 现在就看 |
 
