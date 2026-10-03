@@ -8,7 +8,9 @@
 
 ## 它解决什么
 
-在手机上改一个 APK，现在的做法是：用 MT管理器拆包改 smali，用 CAssistant 换个图标，想跑个 AI 又得把包传到电脑。Smithy 把这三件事合成一个 App，并且**让 AI 直接动手**而不是只在旁边聊天。
+改一个 APK，通常要在几个工具之间来回倒：一个负责拆包改 smali，一个负责换图标改文案，想让 AI 帮忙还得把包传到电脑上。
+
+Smithy 把这些合成一个 App，并且**让 AI 直接动手**——不是只在旁边聊天，而是真的调用解包、改包、重打包、装机的工具，而你随时能看到它改了什么、能一键退回去。
 
 ---
 
@@ -22,7 +24,7 @@
 - **权限与组件** — 全部声明权限；Activity / Service / Receiver / Provider 列表，标出**已导出**的和带 IntentFilter 的
 - **签名** — v1/v2/v3 方案、证书主体与颁发者、MD5 / SHA1 / SHA256 指纹、是否 debug 签名
 - **DEX 统计** — 每个 dex 的类数 / 方法数 / 字符串数，方法数超 65536 预警
-- **加固识别** — 常见壳的特征匹配与置信度（不是猜，给证据）
+- **加固识别** — 常见壳的特征匹配与置信度（给证据，不是猜）
 - **结构浏览** — dex / res / assets / lib / META-INF，直接操作 zip 内部，不解压
 
 ### 二、代码层编辑（M1）
@@ -49,7 +51,7 @@
 - **装机** — Shizuku 静默安装 → Root → 系统安装器三级降级
 - **进度可见** — 解析资源 → 汇编 smali → 打包 → 对齐 → 签名，分阶段可取消
 
-### 五、改动管理（M1，别家没有的）
+### 五、改动管理（M1）
 
 每次修改都留一条记录：改了什么、谁改的（你或 AI）、AI 为什么改、前后 diff。
 
@@ -67,7 +69,7 @@
 
 ### 七、开放接口（M3）
 
-- **把自身能力做成 MCP 服务端** — App 内起 `127.0.0.1/mcp`，暴露 `apk.*` / `dex.*` / `smali.*` / `arsc.*` 等语义化工具。**外部 AI（Claude / Cursor / Trae）可以直接调用它来改包**——相当于把 MT管理器那套 MCP 开源化
+- **把自身能力做成 MCP 服务端** — App 内起 `127.0.0.1/mcp`，暴露 `apk.*` / `dex.*` / `smali.*` / `arsc.*` 等语义化工具。**外部 AI（Claude / Cursor / Trae）可以直接调用它来改包**
 - **同时是 MCP 客户端** — 可挂 Frida、抓包、数据库等外部 MCP
 - 工具粒度是语义化的（`dex.search_string`、`smali.patch`、`apk.rebuild`），不给 AI 万能 shell 口子
 
@@ -108,7 +110,7 @@
 
 ## 技术要点
 
-- **纯 Java 引擎，不内置 Linux 环境**：`ARSCLib` + `APKEditor` + `smali/dexlib2` + `jadx-core(Android 版)` + `apksig-android` 直接在 Android 进程内完成解包 / 回编 / 签名。体积目标 < 40MB（同类方案常内置 2-3GB rootfs）
+- **纯 Java 引擎，不内置 Linux 环境**：`ARSCLib` + `APKEditor` + `smali/dexlib2` + `jadx-core(Android 版)` + `apksig-android` 直接在 Android 进程内完成解包 / 回编 / 签名。体积目标 < 40MB
 - **重活跑独立进程**：解包 / 汇编 smali / 回编 / 签名在 `:worker` 进程执行，拿独立堆上限，主进程不会因大包 OOM 被杀
 - **增量回编**：未改动条目复用原字节
 
