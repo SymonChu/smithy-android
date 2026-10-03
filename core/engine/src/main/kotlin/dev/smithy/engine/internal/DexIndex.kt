@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * 写能力不在这里：字符串替换见 [DexEditor]，smali 往返见 [SmaliBridge]。
  */
-internal class DexIndex(apkFile: File, val apiLevel: Int) : AutoCloseable {
+internal class DexIndex(private val apkFile: File, val apiLevel: Int) : AutoCloseable {
 
     // loadDexContainer 声明为 MultiDexContainer<? extends DexBackedDexFile>，Kotlin 侧要 out 投影
     private val container: MultiDexContainer<out DexBackedDexFile> =
@@ -26,6 +26,14 @@ internal class DexIndex(apkFile: File, val apiLevel: Int) : AutoCloseable {
     val names: List<String> = container.dexEntryNames.sortedWith(DEX_ORDER)
 
     private val cache = ConcurrentHashMap<String, DexBackedDexFile>()
+
+    /**
+     * 倒原始字节用的独立句柄。
+     *
+     * dexlib2 的 container 是「解析」入口，拿不到条目的原始字节；而 [dump] 要的是原样字节。
+     * 两个句柄都只读打开同一个文件，不冲突。懒建是因为只有 jadx 这类库才用得上。
+     */
+    private val zipLazy = lazy { java.util.zip.ZipFile(apkFile) }
 
     fun dex(name: String): DexBackedDexFile? {
         cache[name]?.let { return it }
@@ -51,7 +59,24 @@ internal class DexIndex(apkFile: File, val apiLevel: Int) : AutoCloseable {
         return null
     }
 
-    override fun close() = cache.clear()
+    /**
+     * 把某个 dex 的**原始字节**导出成文件。
+     *
+     * 不能用「dexlib2 读出来再写一遍」代替：`DexBackedDexFile` 重新序列化会重排常量池与偏移，
+     * 得到的已不是原包里那个 dex。只认文件输入的库（jadx、外部工具）必须拿到原样字节。
+     */
+    fun dump(name: String, outFile: File): File? {
+        val src = runCatching { zipLazy.value }.getOrNull() ?: return null
+        val entry = src.getEntry(name) ?: return null
+        outFile.parentFile?.mkdirs()
+        src.getInputStream(entry).use { ins -> outFile.outputStream().use { ins.copyTo(it) } }
+        return outFile
+    }
+
+    override fun close() {
+        cache.clear()
+        if (zipLazy.isInitialized()) runCatching { zipLazy.value.close() }
+    }
 
     companion object {
         /** `classes.dex` 的捕获组是空串，等价于 1 */

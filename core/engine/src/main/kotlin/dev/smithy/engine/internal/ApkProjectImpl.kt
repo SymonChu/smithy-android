@@ -11,6 +11,7 @@ import dev.smithy.engine.ApkProject
 import dev.smithy.engine.BuildProgress
 import dev.smithy.engine.ComponentInfo
 import dev.smithy.engine.DexStat
+import dev.smithy.engine.InstallChannel
 import dev.smithy.engine.InstallResult
 import dev.smithy.engine.InstallVia
 import dev.smithy.engine.ManifestField
@@ -54,6 +55,11 @@ internal class ApkProjectImpl(
      * 签名指纹一变，改过的包就装不上了（系统只报"应用未安装"）。
      */
     private val keystoreDir: File,
+    /**
+     * 装机通道。为 null 时 [install] 会明确报错而不是假装成功 ——
+     * 引擎层不认识 Shizuku/Root，没有通道就等于「这台设备上装不了」，得让用户知道原因。
+     */
+    private val installChannel: InstallChannel? = null,
 ) : ApkProject {
 
     override var state: WorkspaceState = WorkspaceState.UNPACKED
@@ -84,6 +90,10 @@ internal class ApkProjectImpl(
     @Volatile
     private var dexIndexRef: DexIndex? = null
 
+    /** jadx 单类反编译（按 dex 缓存会话，见 [JadxBridge]） */
+    @Volatile
+    private var jadxRef: JadxBridge? = null
+
     @Volatile
     private var tmpRoot: File? = null
 
@@ -94,6 +104,11 @@ internal class ApkProjectImpl(
         dexIndexRef ?: DexIndex(apkFile, apiLevel).also { dexIndexRef = it }
     }
 
+    /** jadx 会话懒建：不点开 Java 视图，就一个字节都不为它加载 */
+    private fun jadx(): JadxBridge = jadxRef ?: synchronized(this) {
+        jadxRef ?: JadxBridge(dexIndex()).also { jadxRef = it }
+    }
+
     private fun tmpDir(prefix: String): File {
         val root = tmpRoot ?: synchronized(this) {
             tmpRoot ?: Files.createTempDirectory("smithy-ws-").toFile().also { tmpRoot = it }
@@ -102,6 +117,8 @@ internal class ApkProjectImpl(
     }
 
     override fun close(keepArtifacts: Boolean) {
+        jadxRef?.close()
+        jadxRef = null
         dexIndexRef?.close()
         dexIndexRef = null
         workspaceRef = null
@@ -187,7 +204,25 @@ internal class ApkProjectImpl(
         DexSearch.run(dexIndex(), query)
     }
 
-    override suspend fun decompileToJava(className: String): String = todo("decompileToJava")
+    /**
+     * 单类反编译成 Java。
+     *
+     * Java 视图是给人读的（smali 是给机器改的）：先在 Java 里看懂目标逻辑，
+     * 再切到 smali 精确改。两者是同一份 dex 的两个视图，不是两份真相。
+     */
+    override suspend fun decompileToJava(className: String): String = withContext(Dispatchers.IO) {
+        val descriptor = DexIndex.descriptor(className)
+        jadx().decompile(descriptor, tmpDir("jadx"))?.let { return@withContext it }
+
+        // null 有两种含义，必须分开说：类根本不在包里 vs 在包里但反编译不出来。
+        // 报错信息要给下一步 —— 见 docs/04 的错误约定。
+        if (dexIndex().dexOfClass(descriptor) == null) {
+            throw NoSuchElementException("类不在本包内: $className")
+        }
+        throw IllegalStateException(
+            "jadx 反编译不出这个类（多见于加固过的包或畸形字节码）: $className；可改用 smali 视图，它一定能给出结果",
+        )
+    }
 
     override suspend fun readSmali(className: String): String = withContext(Dispatchers.IO) {
         val file = SmaliBridge.disassembleClass(dexIndex(), className, tmpDir("smali"))
@@ -201,9 +236,49 @@ internal class ApkProjectImpl(
             SmaliBridge.extractMethod(smali, methodSig)
                 ?: throw NoSuchElementException("类 $className 内找不到方法: $methodSig")
         }
+    /**
+     * 改一处 smali。
+     *
+     * 与 [replaceString] 的分工：改**字符串常量**用 replaceString（走 dexlib2 的常量池改写，
+     * 只动那一个 dex、毫秒级）；改**逻辑**（指令、寄存器、跳转）才用这个，
+     * 它要走「整 dex 反汇编 → 改文本 → 整 dex 汇编」的往返，慢得多但能改的东西多得多。
+     *
+     * [methodSig] 非空时只在该方法体内替换：同一条指令往往在许多方法里都出现，
+     * 不限定范围很容易改到别处去。
+     */
     override suspend fun patchSmali(
         className: String, methodSig: String?, pattern: String, replacement: String, regex: Boolean,
-    ): PatchRecord = todo("patchSmali")
+    ): PatchRecord = withContext(Dispatchers.IO) {
+        val outcome = SmaliEditor.patchClass(
+            index = dexIndex(),
+            descriptor = DexIndex.descriptor(className),
+            methodSig = methodSig,
+            pattern = pattern,
+            replacement = replacement,
+            regex = regex,
+            workDir = tmpDir("smali-edit"),
+        )
+        when (outcome) {
+            is SmaliEditor.Outcome.Ok -> stageEntry(
+                entryPath = outcome.dexName,
+                after = outcome.dexFile,
+                kind = PatchRecord.PatchKind.SMALI,
+                note = "smali 改写：${methodSig ?: className}（命中 ${outcome.hits} 处）",
+            )
+
+            SmaliEditor.Outcome.NoSuchClass ->
+                throw NoSuchElementException("类不在本包内: $className")
+
+            SmaliEditor.Outcome.NoSuchMethod ->
+                throw NoSuchElementException("类 $className 里找不到方法: $methodSig")
+
+            SmaliEditor.Outcome.NotFound -> throw NoSuchElementException(
+                "在 ${methodSig?.let { "方法 $it" } ?: "整个类 $className"} 里没找到要替换的内容: $pattern" +
+                    "（只想改字符串常量的话，用 replaceString 更快）",
+            )
+        }
+    }
+
 
     override suspend fun resources(type: String?, filter: String?): List<ResourceEntry> = todo("resources")
     override suspend fun setResource(resName: String, value: String): PatchRecord = todo("setResource")
@@ -328,7 +403,62 @@ internal class ApkProjectImpl(
 
     override suspend fun verify(apk: File): VerifyResult = withContext(Dispatchers.IO) { Signer.verify(apk) }
 
-    override suspend fun install(apk: File, via: InstallVia): InstallResult = todo("install")
+    /**
+     * 装机。按 `Shizuku → Root → 系统安装器` 逐级降级。
+     *
+     * 系统安装器（弹界面让用户点）**永远可用**，所以降级链一定有终点，
+     * 不会出现「三档都试完还是没反应」。最终用了哪一档由 [InstallResult.via] 如实带回来 ——
+     * 静默降级到手动安装却报告"已静默安装"是最误导人的行为。
+     */
+    override suspend fun install(apk: File, via: InstallVia): InstallResult = withContext(Dispatchers.IO) {
+        require(apk.isFile) { "安装包不存在: ${apk.absolutePath}" }
+
+        val channel = installChannel
+            ?: return@withContext InstallResult(
+                ok = false,
+                via = via,
+                message = "当前没有接入装机通道：引擎层未注册 InstallChannel。" +
+                    "在 App 里运行时会由平台层提供（Shizuku/Root/系统安装器）",
+            )
+
+        val current = state
+        if (current != WorkspaceState.SIGNED && current != WorkspaceState.REBUILT) {
+            return@withContext InstallResult(
+                ok = false,
+                via = via,
+                message = "当前状态是 $current，还不能装机：先重打包并签名（改完没打包的包装上去就是旧的）",
+            )
+        }
+
+        val available = runCatching { channel.available() }.getOrDefault(listOf(InstallVia.INTENT))
+        // InstallVia 的声明顺序就是降级顺序：SHIZUKU → ROOT → INTENT
+        val chain = InstallVia.entries
+            .dropWhile { it != via }
+            .filter { it in available || it == InstallVia.INTENT }
+        if (chain.isEmpty()) {
+            return@withContext InstallResult(
+                ok = false,
+                via = via,
+                message = "$via 在当前设备上不可用（未授权或未安装对应服务），且没有可降级的通道",
+            )
+        }
+
+        var last: InstallResult? = null
+        for (v in chain) {
+            val r = runCatching { channel.install(apk, v) }.getOrElse { t ->
+                InstallResult(false, v, t.message ?: t::class.java.simpleName)
+            }
+            if (r.ok) {
+                state = WorkspaceState.INSTALLED
+                println("[install] ${apk.name} 经 $v 装机成功")
+                return@withContext r
+            }
+            println("[install] $v 失败：${r.message} → 降级")
+            last = r
+        }
+        last ?: InstallResult(false, via, "装机链路走完了但没有拿到结果")
+    }
+
 
     override suspend fun patches(): List<PatchRecord> = workspaceRef?.patches.orEmpty()
 
@@ -346,7 +476,12 @@ internal class ApkProjectImpl(
          * 全程只读：不动原文件，所以不需要拷贝工作区（M1 起要改包时才会建 workspace）。
          * 单个 APK 的解析动作全部在这里完成，耗时集中在签名校验与 dex 头读取。
          */
-        suspend fun open(workspaceId: String, apkFile: File, keystoreDir: File): ApkProjectImpl = withContext(Dispatchers.IO) {
+        suspend fun open(
+            workspaceId: String,
+            apkFile: File,
+            keystoreDir: File,
+            installChannel: InstallChannel? = null,
+        ): ApkProjectImpl = withContext(Dispatchers.IO) {
             require(apkFile.isFile) { "不是文件: ${apkFile.absolutePath}" }
 
             val zip = ZipFile(apkFile)
@@ -377,7 +512,7 @@ internal class ApkProjectImpl(
                 isSplit = runCatching { manifest?.isSplit == true }.getOrDefault(false),
             )
 
-            ApkProjectImpl(workspaceId, apkFile, module, zip, meta, keystoreDir)
+            ApkProjectImpl(workspaceId, apkFile, module, zip, meta, keystoreDir, installChannel)
         }
 
         private const val UNKNOWN = "—"

@@ -23,10 +23,12 @@ object ApkProjects {
         apkFile: File,
         workspaceId: String = UUID.randomUUID().toString(),
         keystoreDir: File? = null,
+        installChannel: InstallChannel? = null,
     ): ApkProject = ApkProjectImpl.open(
         workspaceId = workspaceId,
         apkFile = apkFile,
         keystoreDir = keystoreDir
             ?: File(System.getProperty("java.io.tmpdir") ?: "/tmp", "smithy-keystore"),
+        installChannel = installChannel,
     )
 }
