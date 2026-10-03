@@ -24,5 +24,7 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.activity.compose)          // SAF 选择器
+    implementation(libs.androidx.lifecycle.viewmodel.compose) // viewModel()
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)}

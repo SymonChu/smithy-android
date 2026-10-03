@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import dev.smithy.feature.apk.ApkWorkbenchScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -25,7 +26,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** 四个 Tab 的骨架。M0 只填「工作台」，其余在 M3/M4 补。 */
 private enum class Tab(val label: String) {
     Files("文件"),
     Apk("工作台"),
@@ -53,13 +53,12 @@ fun SmithyRoot() {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (tab) {
-                // M4 起实现：双窗口 + zip 直改 + 编辑器
+                // M4：双窗口 + zip 直改 + 编辑器
                 Tab.Files -> Placeholder("双窗口文件管理（M4）")
-                // M0 起实现：概览 / 代码 / 资源 / 改动
-                Tab.Apk -> Placeholder("APK 工作台")
+                // M0 已可用：选包 → 解析报告
+                Tab.Apk -> ApkWorkbenchScreen()
                 // M3：Agent 对话、工具卡片、门控确认
-                Tab.Chat -> Placeholder("AI 对话")
-                // 模型配置 / Shizuku 引导 / 模块管理
+                Tab.Chat -> Placeholder("AI 对话（M3）")
                 Tab.Settings -> Placeholder("设置")
             }
         }

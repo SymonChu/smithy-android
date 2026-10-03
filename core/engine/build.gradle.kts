@@ -8,10 +8,6 @@
 // 但代码约束不变，请守住：
 //   **本模块不 import android.* / androidx.***，保持逻辑纯 JVM、可移植、可脱离设备测试。
 //   Android 的接缝（Context、SAF、Shizuku）放在 app 与 feature 模块里。
-//   单元测试跑在 src/test（JVM 上执行，不需要模拟器）。
-//
-// 注：插件用不带版本的 id()，理由见原注释（Kotlin 同族插件共用 kotlin-gradle-plugin，
-//     子项目带版本声明会报 "already on the classpath with an unknown version"）。
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
@@ -56,12 +52,22 @@ dependencies {
     implementation(libs.serialization.json)
 
     testImplementation(kotlin("test"))
+    testImplementation("junit:junit:4.13.2")   // TODO: 移到 libs.versions.toml 统一管理
     testImplementation(libs.coroutines.core)
 }
 
 tasks.withType<Test>().configureEach {
     // Android library 的单元测试默认跑 JUnit4，不配 useJUnitPlatform()
     maxHeapSize = "2g"
+    testLogging {
+        // 集成测试会打印解析结果，CI 日志里要能看到
+        showStandardStreams = true
+        events("passed", "failed", "skipped")
+    }
+    // 样本 APK 通过环境变量传入（缺省则跳过集成测试）：
+    //   SMITHY_TEST_APK=app/build/outputs/apk/debug/app-debug.apk ./gradlew :core:engine:testDebugUnitTest
+    // 用环境变量而不是 System.getProperty：Test 任务的 JVM 会自动继承环境变量，
+    // 而读系统属性要发生在配置阶段，与 configuration cache 冲突。
     // 实测项见 docs/08-risks.md 第六节：
     //  - ARSCLib 处理 5MB / 20MB / 50MB resources.arsc 的内存占用
     //  - APKEditor 的 engine API 能否作为库调用（而非只能走 CLI）
