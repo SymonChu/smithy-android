@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      这里只声明 Shizuku 需要的东西。
+      装机用的 FileProvider 由 :app 声明 —— authorities 必须全局唯一，
+      两个模块都声明同一个 authority 会在 manifest 合并阶段直接报冲突。
+    -->
+
+    <!-- Shizuku 服务与 API 权限 -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!-- 系统安装器通道（弹安装界面）需要它 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!--
+          Shizuku 的 binder 接收器。它把 Shizuku 服务的 binder 递给本应用，
+          是 Shizuku 一切能力（包括状态检测）的前提。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+</manifest>

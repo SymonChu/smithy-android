@@ -10,6 +10,7 @@ agp            = "8.7.0"     # VERIFY
 kotlin         = "2.0.20"    # VERIFY  kotlin 与 compose 编译器插件版本必须一致
 ksp            = "2.0.20-1.0.25"  # VERIFY  必须与 kotlin 版本匹配
 composeBom     = "2024.09.00"     # VERIFY
+coreKtx        = "1.13.1"         # VERIFY  androidx.core:core-ktx（FileProvider 在 feature:apk 里用）
 navigation     = "2.8.0"     # VERIFY
 activityCompose= "1.9.2"     # VERIFY
 lifecycle      = "2.8.6"     # VERIFY  androidx.lifecycle:*
@@ -42,6 +43,10 @@ zstd             = { module = "com.github.luben:zstd-jni", version.ref = "zstd" 
 # ── Android 平台能力 ──
 shizuku-api      = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
 shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
+# aidl 里有 IShizukuService / IRemoteProcess 的 stub。
+# 装包要用它：`Shizuku` 门面类在 13.x 去掉了 newProcess，但**服务接口里一直有**，
+# 拿到 stub 就能直接调，不必去碰 IPackageInstaller 那套 hidden API。
+shizuku-aidl     = { module = "dev.rikka.shizuku:aidl", version.ref = "shizuku" }
 libsu            = { module = "com.github.topjohnwu.libsu:core", version.ref = "libsu" }
 hiddenapibypass  = { module = "org.lsposed.hiddenapibypass:hiddenapibypass", version.ref = "hiddenapibypass" }
 
@@ -51,6 +56,7 @@ sora-textmate    = { module = "io.github.Rosemoe.sora-editor:language-textmate",
 
 # ── UI ──
 androidx-compose-bom      = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-core-ktx         = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-compose-ui       = { module = "androidx.compose.ui:ui" }
 androidx-compose-material3= { module = "androidx.compose.material3:material3" }
 androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
