@@ -6,7 +6,7 @@
 ## 工作区
 | 工具 | Effect | 参数 | 说明 |
 |---|---|---|---|
-| `workspace.open` | W | apkPath | 返回 workspaceId + ApkMeta 摘要 |
+| `workspace.open` | W | apkPath | 返回 workspaceId + ApkMeta 摘要（模块用 `module.open`） |
 | `workspace.status` | R | workspaceId | 状态机当前值 + 是否 DIRTY + 改动数 |
 | `workspace.close` | W | workspaceId, keepArtifacts | 释放/清理工作区 |
 
@@ -57,11 +57,33 @@
 | `apk.install` | D | path, via=shizuku\|root\|intent | 静默安装优先，失败降级到 intent |
 
 ## 文件 / 压缩包
-| 工具 | Effect | 参数 |
-|---|---|---|
-| `fs.list` / `fs.read` / `fs.write` / `fs.copy` / `fs.move` / `fs.delete` | R/W | path, target |
-| `zip.list` / `zip.extract` / `zip.put` / `zip.delete` | R/W | archive, path, file |
-| `shell.exec` | D | cmd, via（默认关闭，需设置开启 + 每次确认） |
+| 工具 | Effect | 参数 | 说明 |
+|---|---|---|---|
+| `fs.list` / `fs.read` / `fs.write` / `fs.copy` / `fs.move` / `fs.delete` | R/W | path, target | 工作区与任意目录的文件操作 |
+| `zip.list` / `zip.read` / `zip.extract` / `zip.put` / `zip.delete` | R/W | archive, path, file | 模块 zip 与 APK **共用这一套**，不另造 `archive.*` |
+| `shell.exec` | D | cmd, via | 默认关闭，需设置开启 + 每次确认 |
+
+## 模块工程（M6）
+> **无 Root 时**：只读检视与重打包仍可用；涉及刷入 / 启停 / 重启的工具返回 `NO_ROOT` 并附 hint，**不静默失败**。
+
+| 工具 | Effect | 参数 | 说明 |
+|---|---|---|---|
+| `module.open` | W | path | 打开模块 zip 为工作区，返回 moduleWorkspaceId + 元数据摘要；`workspace.status` / `patch.*` / `fs.*` 对模块工作区同样可用 |
+| `module.inspect` | R | workspaceId | 用 `module.prop` 判定模块、用 `zygisk/*.so` 判定 Zygisk 模块；列脚本 / overlay / ABI 覆盖，并与设备 ABI 比对（缺当前 ABI 显式警告） |
+| `module.prop_get` | R | workspaceId | 结构化返回 id / name / version / versionCode / author / description，缺失字段显式标出 |
+| `module.prop_set` | W | workspaceId, field, value | 改 id / 名称 / 版本 / 描述；改 id 时校验与目录名一致 |
+| `module.scripts` | R | workspaceId | 已知脚本与配置清单（`service.sh` / `post-fs-data.sh` / `system.prop` / `sepolicy.rule` / `customize.sh`）；内容用 `zip.read` 取 |
+| `module.package` | W | workspaceId, out? | 按规范布局重打包：`module.prop` 在根、`zygisk/` 原样、保持 entry 顺序 |
+| `module.install` | D | path \| workspaceId, via=root | **仅 root**；Shizuku 在该场景权限不足，直接返回 `NO_ROOT` + hint |
+| `module.enable` / `module.disable` | W | moduleId | 增删 `disable` 标记文件 |
+| `module.remove` | D | moduleId | 写 `remove` 标记（下次重启卸载）——比直接删目录安全 |
+| `module.uninstall` | D | moduleId | 直接删除模块目录 |
+| `zygote.restart` | D | — | 软重启使模块生效；影响所有运行中应用，**信任模式下也不免确认** |
+| `elf.inspect` | R | workspaceId, entry | ELF 头 / 架构 / 依赖(NEEDED) / 节表 / 字符串表统计 |
+| `elf.strings` | R | workspaceId, entry, filter?, minLen? | 字符串清单，分页；受默认输出预算约束 |
+| `elf.patch_string` | W | workspaceId, entry, from, to, scope? | **仅等长替换**；长度不等直接拒绝，hint 指向源码重编（M6-B） |
+
+**明确不做**：反汇编 `.so` 改逻辑再回编——逆向产物没有源码语义，回编不成立，不做半成品。
 
 ## 改动管理
 | 工具 | Effect | 参数 | 说明 |
@@ -77,8 +99,9 @@
 | `tunnel.start/stop` | W | cloudflared 公网预览（对齐 CodeForge） |
 | `rootfs.exec` | D | 需先下载 rootfs 模块 |
 | `build.gradle_assemble` | W | 需先下载构建模块 |
+| `build.module_assemble` | W | 需先下载 native 构建模块（clang + sysroot），从源码编译 `.so`；改模块逻辑的唯一正当路径 |
 
 ## 结果与错误约定
 - 返回统一 JSON；列表类结果带 `total` + `nextCursor` 分页，避免一次塞爆上下文
-- 错误统一 `{code, message, hint}`，**hint 必须给出下一步建议**（例：`UNSUPPORTED_ARSC` → "该包资源表为非常规格式，可用 `rootfs.exec` 走 apktool 路径"）
+- 错误统一 `{code, message, hint}`，**hint 必须给出下一步建议**（例：`UNSUPPORTED_ARSC` → "该包资源表为非常规格式，可用 `rootfs.exec` 走 apktool 路径"；`NO_ROOT` → "当前设备未取得 root，模块刷入不可用，可先 `module.package` 导出 zip 手动刷入"）
 - 每个工具的输出预算：默认截断到 8KB，超出写文件并返回路径（AI 可按需再读）

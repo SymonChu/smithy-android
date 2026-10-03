@@ -101,14 +101,14 @@
 可选部分：`service.sh` / `post-fs-data.sh`（开机脚本）、`system/`（overlay）、`system.prop`、`sepolicy.rule`、`customize.sh`（安装期脚本）；目录里放一个空文件 `disable` 即停用，放 `remove` 即卸载。
 
 **任务（A 档：结构层）**
-1. `archive.list/read/write/delete` —— zip 通用读写，模块与 APK 共用底层
-2. `module.inspect` —— 用 `module.prop` 判定模块、用 `zygisk/*.so` 判定 Zygisk 模块；解析元数据、列出脚本与 ABI 覆盖，并与设备实际 ABI 比对（缺当前 ABI 的 .so 要显式警告）
-3. `module.prop` 结构化编辑 —— 改 id / 名称 / 版本 / 描述；改 id 时校验目录名与 id 一致
+1. 归档层**复用既有 `zip.*`**（04 已定义），不另造 `archive.*`；模块 zip 与 APK 共用同一实现
+2. `module.open` + `module.inspect` —— 打开模块 zip 为工作区；用 `module.prop` 判定模块、用 `zygisk/*.so` 判定 Zygisk 模块；解析元数据、列出脚本与 ABI 覆盖，并与设备实际 ABI 比对（缺当前 ABI 的 .so 要显式警告）
+3. `module.prop_get` / `module.prop_set` —— 结构化读写 id / 名称 / 版本 / 描述；改 id 时校验目录名与 id 一致
 4. `module.package` —— 按模块规范布局重打包成可刷 zip
-5. 脚本与配置编辑 —— `service.sh` / `post-fs-data.sh` / `system.prop` / `sepolicy.rule` / `customize.sh`
-6. `module.install` —— 走 **Root 通道**刷入。**此场景 Shizuku 权限不足，只有 Root 一档有效**；含 `module.enable/disable`（增删 `disable` 标记文件）
-7. `zygote.restart` —— 软重启使模块生效；**DESTRUCTIVE 门控 + 显式确认**，并提示会影响所有正在运行的应用
-8. `elf.inspect` + `elf.patch_string` —— 解析 ELF 节表与字符串表，展示架构 / 依赖 / 字符串常量；替换**强制等长**，变长直接拒绝
+5. 脚本与配置编辑 —— `service.sh` / `post-fs-data.sh` / `system.prop` / `sepolicy.rule` / `customize.sh`，走 `zip.read` + `fs.write` + `zip.put`
+6. `module.install` —— 走 **Root 通道**刷入。**此场景 Shizuku 权限不足，只有 Root 一档有效**；另含 `module.enable` / `module.disable`（增删 `disable` 标记）、`module.remove`（写 `remove` 标记，下次重启卸载，比直接删目录安全）、`module.uninstall`
+7. `zygote.restart` —— 软重启使模块生效；**DESTRUCTIVE 门控 + 显式确认**（信任模式下也不免确认），并提示会影响所有正在运行的应用
+8. `elf.inspect` / `elf.strings` / `elf.patch_string` —— 解析 ELF 节表与字符串表，展示架构 / 依赖 / 字符串常量；替换**强制等长**，变长直接拒绝
 9. 工作台新增「模块」标签：元数据、文件树、脚本编辑、ABI 覆盖表
 
 **A 档明确不做**
