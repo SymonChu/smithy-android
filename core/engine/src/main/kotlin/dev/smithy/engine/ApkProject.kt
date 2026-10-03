@@ -10,7 +10,7 @@ import java.io.InputStream
  * 实现可替换（ARSCLib+APKEditor 原生实现 / 未来的 rootfs+apktool 兜底实现），
  * UI 与 AI **只**通过这个接口操作 APK，不得直接依赖任何引擎库。
  */
-interface ApkProject {
+interface ApkProject : AutoCloseable {
     val id: String
     val state: WorkspaceState
     val meta: ApkMeta
@@ -20,6 +20,9 @@ interface ApkProject {
     val progress: Flow<BuildProgress>
 
     fun close(keepArtifacts: Boolean)
+
+    /** 让调用方能写 `use { }`。默认不保留中间产物（签名后的包会另行导出）。 */
+    override fun close() = close(keepArtifacts = false)
 
     // ── 条目读写 ──────────────────────────────────────────────
     suspend fun list(path: String? = null): List<ApkEntry>

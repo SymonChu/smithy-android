@@ -15,6 +15,7 @@ import dev.smithy.engine.InstallResult
 import dev.smithy.engine.InstallVia
 import dev.smithy.engine.ManifestField
 import dev.smithy.engine.PatchRecord
+import dev.smithy.engine.PatchOrigin
 import dev.smithy.engine.ResourceEntry
 import dev.smithy.engine.SignConfig
 import dev.smithy.engine.SignatureInfo
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.zip.ZipFile
 
@@ -53,10 +55,48 @@ internal class ApkProjectImpl(
     private val _progress = MutableStateFlow(BuildProgress(BuildProgress.Stage.DONE, 100))
     override val progress: StateFlow<BuildProgress> = _progress
 
-    private val patches = mutableListOf<PatchRecord>()
-    override val patchCount: Int get() = patches.size
+    override val patchCount: Int get() = workspaceRef?.patchCount ?: 0
+
+    // ── M1：dex 索引、工作区与临时目录（都是懒建，M0 的解析路径不碰它们）─────
+
+    /** 改动覆盖层：只存改过的条目，不预先解包整包 */
+    @Volatile
+    private var workspaceRef: Workspace? = null
+
+    /** 上一次 rebuild 的产物。sign() 没有输入参数，靠它衔接打包与签名两步 */
+    @Volatile
+    private var lastBuilt: File? = null
+
+    private fun workspace(): Workspace = workspaceRef ?: synchronized(this) {
+        workspaceRef ?: Workspace(tmpDir("ws"), id).also { workspaceRef = it }
+    }
+
+    @Volatile
+    private var dexIndexRef: DexIndex? = null
+
+    @Volatile
+    private var tmpRoot: File? = null
+
+    /** dex 的 opcodes 按 minSdk 定：生成的 dex 必须能跑在目标设备上 */
+    private val apiLevel: Int get() = meta.minSdk.takeIf { it in 21..99 } ?: 21
+
+    private fun dexIndex(): DexIndex = dexIndexRef ?: synchronized(this) {
+        dexIndexRef ?: DexIndex(apkFile, apiLevel).also { dexIndexRef = it }
+    }
+
+    private fun tmpDir(prefix: String): File {
+        val root = tmpRoot ?: synchronized(this) {
+            tmpRoot ?: Files.createTempDirectory("smithy-ws-").toFile().also { tmpRoot = it }
+        }
+        return Files.createTempDirectory(root.toPath(), prefix).toFile()
+    }
 
     override fun close(keepArtifacts: Boolean) {
+        dexIndexRef?.close()
+        dexIndexRef = null
+        workspaceRef = null
+        if (!keepArtifacts) runCatching { tmpRoot?.deleteRecursively() }
+        tmpRoot = null
         runCatching { zip.close() }
         runCatching { module.close() }
         state = WorkspaceState.IDLE
@@ -65,21 +105,25 @@ internal class ApkProjectImpl(
     // ── 条目读写（只读部分）─────────────────────────────────────
 
     override suspend fun list(path: String?): List<ApkEntry> = withContext(Dispatchers.IO) {
+        val ws = workspaceRef
         zip.entries().asSequence()
+            .filter { !(ws?.isDeleted(it.name) ?: false) }
             .filter { path == null || it.name.startsWith(path) }
             .map {
-                ApkEntry(
-                    path = it.name,
-                    size = it.size.coerceAtLeast(0),
-                    compressedSize = it.compressedSize.coerceAtLeast(0),
-                    isDirectory = it.isDirectory,
-                )
+                // 改过的条目以覆盖层为准：否则 size 显示的是旧值，与 readEntry 读到的不一致
+                val overlay = ws?.overlayFile(it.name)
+                if (overlay != null) {
+                    ApkEntry(it.name, overlay.length(), overlay.length(), it.isDirectory)
+                } else {
+                    ApkEntry(it.name, it.size.coerceAtLeast(0), it.compressedSize.coerceAtLeast(0), it.isDirectory)
+                }
             }
             .sortedBy { it.path }
             .toList()
     }
 
     override suspend fun readEntry(path: String): InputStream = withContext(Dispatchers.IO) {
+        workspaceRef?.overlayFile(path)?.let { return@withContext it.inputStream() }
         val entry = zip.getEntry(path) ?: throw NoSuchElementException("包内不存在: $path")
         zip.getInputStream(entry)
     }
@@ -89,29 +133,147 @@ internal class ApkProjectImpl(
     private fun todo(m: String): Nothing =
         throw NotImplementedError("$m —— 计划在 M1 实现（见 docs/06-milestones.md）")
 
-    override suspend fun writeEntry(path: String, data: InputStream): PatchRecord = todo("writeEntry")
-    override suspend fun deleteEntry(path: String): PatchRecord = todo("deleteEntry")
-    override suspend fun dexSearch(query: DexQuery): List<DexHit> = todo("dexSearch")
+    // ── 条目写入：一切改动都落到工作区覆盖层，原包始终不动 ──────────
+
+    override suspend fun writeEntry(path: String, data: InputStream): PatchRecord = withContext(Dispatchers.IO) {
+        val tmp = File(tmpDir("put"), path.substringAfterLast('/'))
+        data.use { ins -> tmp.outputStream().use { ins.copyTo(it) } }
+        stageEntry(path, tmp, PatchRecord.PatchKind.ENTRY_REPLACE, note = "写入条目")
+    }
+
+    override suspend fun deleteEntry(path: String): PatchRecord = withContext(Dispatchers.IO) {
+        val record = workspace().markDeleted(path)
+        state = WorkspaceState.DIRTY
+        record
+    }
+
+    /**
+     * 把某个条目记进覆盖层。
+     *
+     * 「改动前的内容」优先取覆盖层里已有的版本：同一个 entry 连续改两次时，
+     * 第二次的 before 必须是第一次改完的样子，否则回退会跳步。
+     */
+    private fun stageEntry(
+        entryPath: String,
+        after: File,
+        kind: PatchRecord.PatchKind,
+        note: String? = null,
+    ): PatchRecord {
+        val ws = workspace()
+        val before = ws.overlayFile(entryPath) ?: extractOriginal(entryPath)
+        val record = ws.stage(entryPath, before, after, kind, PatchOrigin.User, note)
+        state = WorkspaceState.DIRTY
+        return record
+    }
+
+    /** 从原包里解出条目内容，作为改动的基线。条目不存在时返回 null（表示是新增）。 */
+    private fun extractOriginal(entryPath: String): File? {
+        val entry = zip.getEntry(entryPath) ?: return null
+        val out = File(tmpDir("orig"), entryPath.substringAfterLast('/'))
+        zip.getInputStream(entry).use { ins -> out.outputStream().use { ins.copyTo(it) } }
+        return out
+    }
+    override suspend fun dexSearch(query: DexQuery): List<DexHit> = withContext(Dispatchers.IO) {
+        DexSearch.run(dexIndex(), query)
+    }
+
     override suspend fun decompileToJava(className: String): String = todo("decompileToJava")
-    override suspend fun readSmali(className: String): String = todo("readSmali")
-    override suspend fun readSmaliMethod(className: String, methodSig: String): String = todo("readSmaliMethod")
+
+    override suspend fun readSmali(className: String): String = withContext(Dispatchers.IO) {
+        val file = SmaliBridge.disassembleClass(dexIndex(), className, tmpDir("smali"))
+            ?: throw NoSuchElementException("类不在本包内: $className")
+        file.readText()
+    }
+
+    override suspend fun readSmaliMethod(className: String, methodSig: String): String =
+        withContext(Dispatchers.IO) {
+            val smali = readSmali(className)
+            SmaliBridge.extractMethod(smali, methodSig)
+                ?: throw NoSuchElementException("类 $className 内找不到方法: $methodSig")
+        }
     override suspend fun patchSmali(
         className: String, methodSig: String?, pattern: String, replacement: String, regex: Boolean,
     ): PatchRecord = todo("patchSmali")
 
     override suspend fun resources(type: String?, filter: String?): List<ResourceEntry> = todo("resources")
     override suspend fun setResource(resName: String, value: String): PatchRecord = todo("setResource")
-    override suspend fun replaceString(from: String, to: String, regex: Boolean): List<PatchRecord> = todo("replaceString")
+    /**
+     * 批量替换 dex 里的字符串常量。
+     *
+     * 只对「确实含目标字符串」的 dex 动手：rewrite 会重建整个 dex 的对象树，
+     * 一个包十几个 dex 全量重写既慢又费内存（见 [DexEditor] 的说明）。
+     */
+    override suspend fun replaceString(from: String, to: String, regex: Boolean): List<PatchRecord> =
+        withContext(Dispatchers.IO) {
+            val rx = if (regex) Regex(from) else null
+            val index = dexIndex()
+            val out = mutableListOf<PatchRecord>()
+
+            for (dexName in index.names) {
+                // replaceString 内部会先数一遍，不含命中的 dex 直接短路，
+                // 不会为它白建对象树（见 DexEditor.replaceString）
+                val tmp = File(tmpDir("dex"), dexName)
+                val result = DexEditor.replaceString(index, dexName, from, to, rx, tmp) ?: continue
+                out += stageEntry(
+                    entryPath = dexName,
+                    after = result.file,
+                    kind = PatchRecord.PatchKind.ENTRY_REPLACE,
+                    note = "字符串替换：$from → $to（命中 ${result.replaced} 处）",
+                )
+            }
+            out
+        }
     override suspend fun setManifestField(field: ManifestField, value: String): PatchRecord = todo("setManifestField")
     override suspend fun replaceIcon(source: String, densities: List<String>?): List<PatchRecord> = todo("replaceIcon")
 
-    override suspend fun rebuild(incremental: Boolean): File = todo("rebuild")
+    /**
+     * 重打包：把工作区覆盖层叠回原包。
+     *
+     * 未改动的条目从原 zip 直接搬运原始压缩字节，所以代价基本只是"复制一遍"，
+     * 而不是把整包重新压一遍。`incremental = false` 强制走全量重压 ——
+     * 留给"某个包增量路径产出坏包"时的排查手段。
+     */
+    override suspend fun rebuild(incremental: Boolean): File = withContext(Dispatchers.IO) {
+        val ws = workspaceRef?.takeIf { it.patchCount > 0 }
+            ?: throw IllegalStateException("没有改动，无需重打包")
+
+        state = WorkspaceState.REBUILDING
+        _progress.value = BuildProgress(BuildProgress.Stage.BUILD, 0)
+        val out = File(tmpDir("out"), "${meta.packageName}-unsigned.apk")
+        try {
+            val stats = ZipRebuilder.rebuild(
+                source = apkFile,
+                outFile = out,
+                overlay = { ws.overlayFile(it) },
+                deleted = ws.deletedEntries(),
+                onProgress = { name -> _progress.value = BuildProgress(BuildProgress.Stage.BUILD, 0, name) },
+                forceFull = !incremental,
+            )
+            lastBuilt = out
+            state = WorkspaceState.REBUILT
+            _progress.value = BuildProgress(BuildProgress.Stage.DONE, 100)
+            println(
+                "[rebuild] 搬运=${stats.rawCopied} 重压=${stats.recompressed} 删除=${stats.deleted} " +
+                    "全量兜底=${stats.fellBackToFull} → ${out.length() / 1024}KB 用时见日志",
+            )
+            out
+        } catch (t: Throwable) {
+            state = WorkspaceState.FAILED
+            throw t
+        }
+    }
+
     override suspend fun sign(config: SignConfig): File = todo("sign")
     override suspend fun verify(apk: File): VerifyResult = todo("verify")
     override suspend fun install(apk: File, via: InstallVia): InstallResult = todo("install")
 
-    override suspend fun patches(): List<PatchRecord> = patches.toList()
-    override suspend fun revert(patchId: String) = todo("revert")
+    override suspend fun patches(): List<PatchRecord> = workspaceRef?.patches.orEmpty()
+
+    override suspend fun revert(patchId: String) {
+        val ws = workspaceRef ?: throw NoSuchElementException("当前没有可回退的改动")
+        if (!ws.revert(patchId)) throw NoSuchElementException("找不到这条改动记录: $patchId")
+        state = if (ws.patchCount == 0) WorkspaceState.UNPACKED else WorkspaceState.DIRTY
+    }
 
     companion object {
 
