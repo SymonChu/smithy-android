@@ -39,11 +39,15 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', '**/*.gradle.kts') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      - name: 引擎单元测试
-        run: ./gradlew :core:engine:testDebugUnitTest --stacktrace
-
+      # 顺序有讲究：先构建出 APK，再拿它当样本跑集成测试 —— 用自己构建的产物验证解析器。
+      # 必须传绝对路径：测试 JVM 的工作目录是模块目录，相对路径会找不到文件而静默跳过。
       - name: 构建 debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: 引擎测试（纯逻辑 + 真实 APK 集成）
+        run: |
+          SMITHY_TEST_APK="$PWD/app/build/outputs/apk/debug/app-debug.apk" \
+            ./gradlew :core:engine:testDebugUnitTest --stacktrace
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
