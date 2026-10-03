@@ -55,7 +55,7 @@
 
 - ARSCLib 在 Android 上处理多大体积的 `resources.arsc` 会爆内存？（实测：分别试 5MB / 20MB / 50MB 资源表）
 - APKEditor 的 engine API 是否适合当库调用，还是只能走 CLI？（若只能 CLI → 需要内置 JVM/rootfs，架构要改）
-- apksig-android 对 v3/v4 与旋转密钥的支持程度
+- ~~apksig-android 对 v3/v4 与旋转密钥的支持程度~~ → **M1 实测：v2/v3 正常；v1 路径 NPE（见第八节）；v4 未启用（需要额外的 idsig 文件，手机自用安装用不上）**
 - sora-editor 打开 5MB smali 的流畅度
 - Shizuku 在目标机型（你自己的手机）上的稳定性
 
@@ -77,3 +77,57 @@
 | C8 | **贡献者管理** | **现在就决定是否引入 CLA**——若以后想做闭源商业版或双授权，没有 CLA 就做不到，事后补极难 |
 
 **开源后的真正难点是 C4**：技术上 4-6 周能出 MVP，但长期维护一个有人用的逆向工具是持续投入。
+
+---
+
+## 八、M1 实测结论（都是踩过的坑，别再踩）
+
+### 8.1 签名：v1 不可用，因此 minSdk < 24 的包不支持
+
+`apksig-android 4.4.0` 在生成 v1 签名的 `MANIFEST.MF` 时抛 NPE：
+
+```
+java.lang.NullPointerException: Cannot invoke "Object.toString()"
+  because the return value of "java.util.Map$Entry.getValue()" is null
+    at com.android.apksig.internal.jar.ManifestWriter.getAttributesSortedByName(ManifestWriter.java:113)
+    at com.android.apksig.internal.apk.v1.V1SchemeSigner.generateManifestFile(V1SchemeSigner.java:382)
+```
+
+已排除调用侧的问题：`Builder.setCreatedBy()` 实现正常（拒绝 null 并存入字段），
+`build()` 也确实把该字段传给了 `ApkSigner` 构造器（字节码逐条确认过）——
+null 产生在库更深处，**外部无法修正**。
+
+**处理**：实现里不签 v1。
+
+- minSdk ≥ 24（Android 7.0）的系统本来就支持 v2/v3，不开 v1 没有任何损失；
+- minSdk < 24 的包**直接报错**，而不是签一个"只有 v2/v3"的包让它在 Android 6 上装不上
+  —— 后者更糟：改包流程显示成功，装机才失败，而且原因很难看出来。
+
+`SignTest` 里有一个**反向用例**盯着这件事：一旦依赖升级后该用例失败，就说明 v1 能用了，
+那时应打开 v1、删掉那个用例并更新本节。
+
+### 8.2 dexlib2 的 Rewriter 每层返回惰性代理
+
+`DexRewriter` 的 `dexFileRewriter.rewrite(dex)` 返回的是 `RewrittenDexFile` 之类的**代理对象**，
+只有真正遍历它（例如交给 `DexFileFactory.writeDexFile`）时才会逐层展开到 instruction。
+
+后果：如果按直觉写成"先看有没有命中，再决定要不要写文件"，内部的命中计数**恒为 0**，
+**改动被静默丢弃且不抛任何异常** —— M1 第一版就是这么错的，表现是"搜索能搜到、替换却报 0 处命中"。
+
+**正确顺序**：先写出去，再判断（写出后发现没有命中就删掉产物）。
+
+### 8.3 zip 的 extra 有两个独立的坑
+
+1. **central directory 的 extra 与 local header 的 extra 可以不同。**
+   AGP 打的包里 `resources.arsc` 的 local header 有 3 字节对齐填充、central directory 里却没有。
+   两者必须分别读，混用会算错数据偏移。
+2. **extra 在 header 里声明了长度，就必须真的把字节写出去。**
+   漏写会让整包所有后续条目整体前移 `extra.size` 字节；症状是读条目报 `LOC header (bad signature)`，
+   而单看条目的数据内容又是对的 —— 极难定位。
+
+**配套原则：位置信息只允许有一个来源。**
+我们用 `CountingOutputStream` 记录"已经写出了多少字节"，localOffset 与 central directory
+偏移都取自它，不再手工累加各部分尺寸（手工累加漏算过一次 extra 的长度，整包偏移全错）。
+
+**通用教训**：自己写 zip 时，凡是"声明出来的长度"都要有断言或单一来源兜住，
+否则错误会以"内容看起来对、位置却错了"的形式出现，比 outright 崩溃难查得多。

@@ -13,13 +13,20 @@ import java.util.UUID
 object ApkProjects {
 
     /**
-     * 打开一个 APK，返回只读的工程视图（M0）。
+     * 打开一个 APK，返回工程视图。
      *
-     * 只读阶段不动原文件，所以不需要建工作区副本；
-     * M1 起一旦涉及写操作，会在此处按 [workspaceId] 建独立工作区并解包。
+     * @param keystoreDir 内置签名密钥的存放目录。**调用方应传一个持久位置**（App 私有目录）：
+     *   用临时目录的话，密钥会随进程结束丢失，重新生成的指纹与已装的应用不一致，
+     *   改过的包就装不上去了。缺省落到系统临时目录，仅供测试与 CLI 使用。
      */
     suspend fun open(
         apkFile: File,
         workspaceId: String = UUID.randomUUID().toString(),
-    ): ApkProject = ApkProjectImpl.open(workspaceId, apkFile)
+        keystoreDir: File? = null,
+    ): ApkProject = ApkProjectImpl.open(
+        workspaceId = workspaceId,
+        apkFile = apkFile,
+        keystoreDir = keystoreDir
+            ?: File(System.getProperty("java.io.tmpdir") ?: "/tmp", "smithy-keystore"),
+    )
 }

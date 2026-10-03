@@ -47,6 +47,13 @@ internal class ApkProjectImpl(
     private val module: ApkModule,
     private val zip: ZipFile,
     override val meta: ApkMeta,
+    /**
+     * 内置签名密钥的存放目录。
+     *
+     * 调用方**必须**给一个持久位置（App 私有目录）。用临时目录的话，每次重启都重新生成密钥，
+     * 签名指纹一变，改过的包就装不上了（系统只报"应用未安装"）。
+     */
+    private val keystoreDir: File,
 ) : ApkProject {
 
     override var state: WorkspaceState = WorkspaceState.UNPACKED
@@ -66,6 +73,9 @@ internal class ApkProjectImpl(
     /** 上一次 rebuild 的产物。sign() 没有输入参数，靠它衔接打包与签名两步 */
     @Volatile
     private var lastBuilt: File? = null
+
+    @Volatile
+    private var lastSigned: File? = null
 
     private fun workspace(): Workspace = workspaceRef ?: synchronized(this) {
         workspaceRef ?: Workspace(tmpDir("ws"), id).also { workspaceRef = it }
@@ -263,8 +273,61 @@ internal class ApkProjectImpl(
         }
     }
 
-    override suspend fun sign(config: SignConfig): File = todo("sign")
-    override suspend fun verify(apk: File): VerifyResult = todo("verify")
+    /**
+     * 签名。默认用内置 keystore：首次自动生成，之后复用（指纹必须稳定，见 [Keystores]）。
+     *
+     * 必须在 [rebuild] 之后调用 —— 接口里 sign 没有输入参数，签的就是上一次打包的产物。
+     */
+    override suspend fun sign(config: SignConfig): File = withContext(Dispatchers.IO) {
+        val input = lastBuilt ?: throw IllegalStateException("还没有打包产物，先调用 rebuild()")
+        if (state != WorkspaceState.REBUILT && state != WorkspaceState.SIGNED) {
+            throw IllegalStateException("当前状态 $state 不允许签名")
+        }
+
+        // 不签 v1。两个理由：
+        //  ① Android 7.0 (API 24) 起系统支持 v2/v3，更新的系统根本不看 v1 —— minSdk >= 24 时它纯属多余；
+        //  ② 当前依赖的 apksig-android 4.4.0 在生成 v1 的 MANIFEST.MF 时会 NPE
+        //     （库内部把某个属性值弄成了 null，已确认不是调用参数的问题，外部无法修正）。
+        // 于是 minSdk < 24 的包我们直接报错 —— 那种包必须靠 v1 才能被老系统接受，
+        // 签一个"只有 v2/v3"的包给 Android 6 会装不上，比提前报错更糟。
+        if (apiLevel < 24) {
+            throw UnsupportedOperationException(
+                "minSdk=$apiLevel 的包需要 v1 签名，但当前 apksig 版本无法生成 v1 清单。" +
+                    "见 docs/08-risks.md 的「签名」一节；可先把 minSdk 提到 24+ 再改。",
+            )
+        }
+        val schemes = config.schemes.filter { it != 1 }.toSet()
+        require(schemes.isNotEmpty()) { "至少要保留一种签名方案（v2 或 v3）" }
+
+        _progress.value = BuildProgress(BuildProgress.Stage.SIGN, 0)
+        val material = Keystores.loadOrCreate(keystoreDir)
+        val out = File(tmpDir("signed"), "${meta.packageName}-signed.apk")
+        try {
+            Signer.sign(
+                input = input,
+                output = out,
+                privateKey = material.privateKey,
+                certificates = material.certificates,
+                minSdk = apiLevel,
+                schemes = schemes,
+            )
+            lastSigned = out
+            state = WorkspaceState.SIGNED
+            _progress.value = BuildProgress(BuildProgress.Stage.DONE, 100)
+            println(
+                "[sign] 密钥${if (material.created) "新生成" else "复用"}" +
+                    " subject=${material.certificates.first().subjectX500Principal.name}" +
+                    " 方案=${schemes.sorted()} → ${out.length() / 1024}KB",
+            )
+            out
+        } catch (t: Throwable) {
+            state = WorkspaceState.FAILED
+            throw t
+        }
+    }
+
+    override suspend fun verify(apk: File): VerifyResult = withContext(Dispatchers.IO) { Signer.verify(apk) }
+
     override suspend fun install(apk: File, via: InstallVia): InstallResult = todo("install")
 
     override suspend fun patches(): List<PatchRecord> = workspaceRef?.patches.orEmpty()
@@ -283,7 +346,7 @@ internal class ApkProjectImpl(
          * 全程只读：不动原文件，所以不需要拷贝工作区（M1 起要改包时才会建 workspace）。
          * 单个 APK 的解析动作全部在这里完成，耗时集中在签名校验与 dex 头读取。
          */
-        suspend fun open(workspaceId: String, apkFile: File): ApkProjectImpl = withContext(Dispatchers.IO) {
+        suspend fun open(workspaceId: String, apkFile: File, keystoreDir: File): ApkProjectImpl = withContext(Dispatchers.IO) {
             require(apkFile.isFile) { "不是文件: ${apkFile.absolutePath}" }
 
             val zip = ZipFile(apkFile)
@@ -314,7 +377,7 @@ internal class ApkProjectImpl(
                 isSplit = runCatching { manifest?.isSplit == true }.getOrDefault(false),
             )
 
-            ApkProjectImpl(workspaceId, apkFile, module, zip, meta)
+            ApkProjectImpl(workspaceId, apkFile, module, zip, meta, keystoreDir)
         }
 
         private const val UNKNOWN = "—"
