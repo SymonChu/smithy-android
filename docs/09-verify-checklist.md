@@ -39,17 +39,11 @@ workspace/verify-artifacts/smithy-minSdk21-signed.apk
 
 ---
 
-## 1. 签名链路（地基，先验它）
-
-- **测试包**：随便一个你自己有权分析的 apk。第一次建议用**你自己打的包**（有源码、
-  知道原来长什么样），别一上来拿别人的。
-- **先备份**：Smithy 不覆盖原包（另存为），但原包还是先留一份。
-- **顺手准备的快检工具**：`apksigner verify --verbose <apk>`（Android SDK build-tools 里
-  有）。它判 `Verifies` 就是真机能装的关键信号。
-
----
-
 ## 1. 签名链路（先验这个，它是所有改包功能的地基）
+
+- **测试包**：第一次建议用**你自己打的包**（有源码、知道原来长什么样），别一上来拿别人的。
+- **先备份**：Smithy 不覆盖原包（另存为），但原包还是先留一份。
+- **随身工具**：`apksigner verify --verbose <apk>`（Android SDK build-tools 里有）。它判 `Verifies` 是真机能装的关键信号。
 
 ### 1.1 `minSdk ≥ 24` 的包
 
