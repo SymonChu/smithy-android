@@ -8,9 +8,19 @@
 
 ---
 
-## 0. 预备
+## 0. 预备 ✅ 已验（真机确认：可以安装、文案也变了）
 
 **最省事的一步**：装这个已经改好的包，一次覆盖改名、打包、v1 签名三条链路。
+
+```
+Release: v0.1.0-verify → smithy-verify-label-minSdk21-v2.apk
+```
+
+**验证结果**：装上了，桌面显示「Smithy 改文案」。这一条同时证明了：
+自实现的 v1 签名被 Android 接受、`.so` 的 16KB 对齐保住了、改文案链路端到端通了。
+
+（⚠️ 第一次上传的包装不上 —— `V1Signer` 重写 zip 时丢了 `.so` 页对齐。
+完整记录见 `08-risks.md` 第 8.1 节。）
 
 ```
 workspace/verify-artifacts/smithy-minSdk21-signed.apk
