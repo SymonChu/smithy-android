@@ -10,8 +10,11 @@ import dev.smithy.fs.planRename
 import dev.smithy.fs.ZipEntryInfo
 import dev.smithy.fs.Hashing
 import dev.smithy.fs.HexEdit
+import dev.smithy.fs.FsItem
+import dev.smithy.fs.FileSearch
 import dev.smithy.fs.NavBounds
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,27 +23,43 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** 文件列表里的一项。 */
-data class FsItem(
-    val name: String,
-    val path: String,
-    val dir: Boolean,
-    val size: Long,
-    val modified: Long,
-) {
-    /**
-     * 能不能当压缩包打开。
-     *
-     * 按扩展名粗判（点开失败会报错，不会静默）—— 比读文件头判断快得多，
-     * 而且这里只是决定「点了要不要试一下」。
-     */
-    val maybeZip: Boolean
-        get() = !dir && name.substringAfterLast('.', "").lowercase() in ZIP_EXTS
+/**
+ * 能不能当压缩包打开。
+ *
+ * 按扩展名粗判（点开失败会报错，不会静默）—— 比读文件头判断快得多，
+ * 而且这里只是决定「点了要不要试一下」。
+ *
+ * 留在这一层而不是 [FsItem] 里：扩展名表是各模块自己的业务常量，
+ * 挪进 core 会把那层拽上一堆和它无关的东西。
+ */
+val FsItem.maybeZip: Boolean
+    get() = !dir && name.substringAfterLast('.', "").lowercase() in ZIP_EXTS
 
-    companion object {
-        private val ZIP_EXTS = setOf("zip", "apk", "jar", "apks", "xapk")
-    }
-}
+private val ZIP_EXTS = setOf("zip", "apk", "jar", "apks", "xapk")
+
+/**
+ * 搜索状态（null = 没在搜）。
+ *
+ * **和「筛选」是两件事**：筛选只在当前已列出的条目里按名字过滤（瞬时、不出这一层），
+ * 搜索会**进子目录**把匹配项翻出来（可能要几秒、可能几百条）。成本差几个数量级，
+ * 所以状态分开存，界面上也分开显示。
+ *
+ * 搜索期间**不动 [FilesUiState.dir]**：结果可能来自别的目录，而当前目录是用户正在
+ * 浏览的位置，把它换掉会让人分不清自己在哪。
+ */
+data class SearchState(
+    /** 从哪个目录开始找。 */
+    val root: String,
+    val query: String,
+    val recursive: Boolean,
+    val hits: List<FsItem> = emptyList(),
+    /** 已经看过多少条 —— 界面要显示它，否则长扫描看起来像卡死。 */
+    val scanned: Int = 0,
+    val running: Boolean = true,
+    /** 到了上限就收手（不是用户取消）。 */
+    val truncated: Boolean = false,
+    val cancelled: Boolean = false,
+)
 
 /** 打开的压缩包的浏览状态。 */
 data class ZipUiState(
@@ -80,7 +99,8 @@ data class FilesUiState(
     val dir: String = "",
     val items: List<FsItem> = emptyList(),
     val zip: ZipUiState? = null,
-    val filter: String = "",
+    /** 搜索状态（null = 没在搜）。进子目录那种，和「本层」那一档都走它。 */
+    val search: SearchState? = null,
     val busy: String? = null,
     val message: String? = null,
     val isError: Boolean = false,
@@ -512,7 +532,111 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         openDir(path)
     }
 
-    fun onFilter(text: String) = _state.update { it.copy(filter = text) }
+    // ── 搜索 ─────────────────────────────────────────────────
+
+    private var searchJob: Job? = null
+
+    /**
+     * 取消标记。
+     *
+     * **不用 `job.cancel()` 来停**：那样遍历会以取消异常结束，已经找到的结果就丢了 ——
+     * 而用户按「停止」是想停，不是想丢掉已找到的。所以让它看到这个标记后**正常返回**，
+     * 带上部分结果。
+     */
+    @Volatile
+    private var searchCancelled = false
+
+    /**
+     * 开始搜索。
+     *
+     * [recursive] 为 false 时只看当前一层（原来「筛选」的行为）—— 保留它是因为
+     * 「我大概知道东西就在这层」时快得多，而两种用法共用同一个输入框。
+     */
+    fun startSearch(query: String, recursive: Boolean) {
+        val s = _state.value
+        if (query.isBlank()) {
+            _state.update { it.copy(search = null) }
+            return
+        }
+        searchCancelled = false
+        searchJob?.cancel()
+        _state.update { it.copy(search = SearchState(root = s.dir, query = query, recursive = recursive)) }
+
+        val root = s.dir
+        val rootMode = s.rootMode
+        val showHidden = s.showHidden
+
+        searchJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                FileSearch.walk(
+                    root = root,
+                    query = query,
+                    // root 模式走 shell、普通模式走 File API。遍历本身不知道这件事
+                    listDir = { p -> if (rootMode) RootFs.list(p) else plainList(p) },
+                    recursive = recursive,
+                    showHidden = showHidden,
+                    onProgress = { scanned ->
+                        _state.update { st ->
+                            st.search?.let { se -> st.copy(search = se.copy(scanned = scanned)) } ?: st
+                        }
+                    },
+                    isCancelled = { searchCancelled },
+                )
+            }
+            _state.update { st ->
+                val se = st.search ?: return@update st
+                st.copy(
+                    search = se.copy(
+                        hits = result.hits,
+                        scanned = result.scanned,
+                        running = false,
+                        truncated = result.truncated,
+                        cancelled = result.cancelled,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** 停止（**保住已找到的结果**，并告诉用户是停下来的、不是搜完了）。 */
+    fun cancelSearch() {
+        searchCancelled = true
+    }
+
+    /** 关掉搜索，回到正常浏览。 */
+    fun closeSearch() {
+        searchCancelled = true
+        searchJob?.cancel()
+        _state.update { it.copy(search = null) }
+    }
+
+    /**
+     * 从搜索结果跳过去：目录就进去，文件就进它所在的目录。
+     *
+     * 不做「直接打开这个文件」：搜索的用途是**找到东西在哪**，而看到它周围有什么
+     * 通常才是下一步要做的（改名、复制、看谁在旁边）。
+     */
+    fun revealHit(item: FsItem) {
+        val target = if (item.dir) item.path else item.path.substringBeforeLast('/', item.path)
+        closeSearch()
+        if (reachable(target)) {
+            openDir(target)
+        } else {
+            _state.update { it.copy(message = "这个位置需要 root（顶部可切换）", isError = true) }
+        }
+    }
+
+    /**
+     * 普通模式的列目录。
+     *
+     * 和 [openDir] 里那段保持一致（同样的五个字段）；抽出来是给搜索复用 ——
+     * 两处各写一份的话，字段一改就会有一处悄悄跟不上。
+     */
+    private fun plainList(path: String): List<FsItem> = runCatching {
+        File(path).listFiles().orEmpty().map { f ->
+            FsItem(f.name, f.absolutePath, f.isDirectory, f.length(), f.lastModified())
+        }
+    }.getOrDefault(emptyList())
 
     /** 换排序方式（只影响当前列表的顺序，不重新读盘）。 */
     fun setSort(by: SortBy) {

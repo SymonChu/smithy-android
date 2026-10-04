@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import dev.smithy.fs.FsItem
+import dev.smithy.fs.humanSize
 import dev.smithy.fs.humanTime
 import dev.smithy.fs.RenameRules
 import androidx.compose.material3.AlertDialog
@@ -66,7 +68,6 @@ fun FilesScreen(
     onOpenDir: (String) -> Unit,
     onOpenItem: (FsItem) -> Unit,
     onGoUp: () -> Unit,
-    onFilter: (String) -> Unit,
     onCloseZip: () -> Unit,
     onReplaceEntry: (String) -> Unit,
     onDeleteEntry: (String) -> Unit,
@@ -106,6 +107,10 @@ fun FilesScreen(
     onHexPage: (Int) -> Unit,
     onHexSave: (String, String) -> Unit,
     onRequestAccess: () -> Unit,
+    onSearch: (String, Boolean) -> Unit,
+    onCancelSearch: () -> Unit,
+    onCloseSearch: () -> Unit,
+    onRevealHit: (FsItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
@@ -115,6 +120,12 @@ fun FilesScreen(
     // 筛选框的开关。它是**按需出现**的：常驻一行去服务一个偶尔用的功能，
     // 就是每次浏览都在付的成本
     var searching by remember { mutableStateOf(false) }
+
+    // 搜索框里的字和「要不要进子目录」。
+    // 放在这里而不是 VM：搜索是**按按钮触发**的，不是边打边搜 ——
+    // 递归扫描可能几秒，每敲一个字扫一遍纯属浪费，结果还会在打字时乱跳
+    var searchText by remember { mutableStateOf("") }
+    var recursive by remember { mutableStateOf(true) }
     // 正在改权限的那个路径（null = 没在改）
     var chmodTarget by remember { mutableStateOf<String?>(null) }
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -202,8 +213,12 @@ fun FilesScreen(
                                 searching = searching,
                                 onImport = onImport,
                                 onToggleSearch = {
-                                    // 关掉筛选时一并清空关键词，否则会「看不见地还在筛」
-                                    if (searching) onFilter("")
+                                    // 关掉搜索时**把结果也清掉**：只藏起搜索条、留着那屏
+                                    // 结果的活，用户会以为自己正站在某个目录里
+                                    if (searching) {
+                                        searchText = ""
+                                        onCloseSearch()
+                                    }
                                     searching = !searching
                                 },
                             )
@@ -213,13 +228,30 @@ fun FilesScreen(
                     if (!state.rootMode && acc != null && acc != StorageAccess.State.Granted) {
                         StorageAccessBar(acc, onRequestAccess)
                     }
-                    if (searching) QuickSearch(state.filter, onFilter) { searching = false }
-                    ShortcutBar(shortcuts(), onJumpTo)
-                    DirToolbar(
-                        state.sortBy, state.showHidden, onSort, onToggleHidden,
-                        onNewFolder = { newTarget = "新建文件夹" },
-                        onNewFile = { newTarget = "新建文件" },
-                    )
+                    if (searching) {
+                SearchBar(
+                    text = searchText,
+                    recursive = recursive,
+                    search = state.search,
+                    onText = { searchText = it },
+                    onScope = { recursive = it },
+                    onRun = { onSearch(searchText, recursive) },
+                    onCancel = onCancelSearch,
+                    onClose = {
+                        searchText = ""
+                        searching = false
+                        onCloseSearch()
+                    },
+                )
+            }
+                    if (state.search == null) ShortcutBar(shortcuts(), onJumpTo)
+                    if (state.search == null) {
+                        DirToolbar(
+                            state.sortBy, state.showHidden, onSort, onToggleHidden,
+                            onNewFolder = { newTarget = "新建文件夹" },
+                            onNewFile = { newTarget = "新建文件" },
+                        )
+                    }
                     SelectionBar(
                         state = state,
                         onToggleSelecting = onToggleSelecting,
@@ -240,6 +272,7 @@ fun FilesScreen(
                         onDelete = onDelete,
                         onToggleSelected = onToggleSelected,
                         onViewHex = onViewHex,
+                        onRevealHit = onRevealHit,
                         onEnterSelection = { item ->
                             // 进多选并选中刚长按的这一项 —— 用户点「多选」时，
                             // 意思就是「从我开始」，再让他自己回头勾一遍是多余的
@@ -288,8 +321,12 @@ fun FilesScreen(
                                 searching = searching,
                                 onImport = onImport,
                                 onToggleSearch = {
-                                    // 关掉筛选时一并清空关键词，否则会「看不见地还在筛」
-                                    if (searching) onFilter("")
+                                    // 关掉搜索时**把结果也清掉**：只藏起搜索条、留着那屏
+                                    // 结果的活，用户会以为自己正站在某个目录里
+                                    if (searching) {
+                                        searchText = ""
+                                        onCloseSearch()
+                                    }
                                     searching = !searching
                                 },
                             )
@@ -299,8 +336,23 @@ fun FilesScreen(
             if (!state.rootMode && acc != null && acc != StorageAccess.State.Granted) {
                 StorageAccessBar(acc, onRequestAccess)
             }
-            if (searching) QuickSearch(state.filter, onFilter) { searching = false }
-            ShortcutBar(shortcuts(), onJumpTo)
+            if (searching) {
+                SearchBar(
+                    text = searchText,
+                    recursive = recursive,
+                    search = state.search,
+                    onText = { searchText = it },
+                    onScope = { recursive = it },
+                    onRun = { onSearch(searchText, recursive) },
+                    onCancel = onCancelSearch,
+                    onClose = {
+                        searchText = ""
+                        searching = false
+                        onCloseSearch()
+                    },
+                )
+            }
+            if (state.search == null) ShortcutBar(shortcuts(), onJumpTo)
             DirToolbar(
                 state.sortBy, state.showHidden, onSort, onToggleHidden,
                 onNewFolder = { newTarget = "新建文件夹" },
@@ -326,7 +378,8 @@ fun FilesScreen(
                 onDelete = onDelete,
                 onToggleSelected = onToggleSelected,
                 onViewHex = onViewHex,
-                onEnterSelection = { item ->
+                onRevealHit = onRevealHit,
+                        onEnterSelection = { item ->
                     // 进多选并选中刚长按的这一项 —— 用户点「多选」时，
                     // 意思就是「从我开始」，再让他自己回头勾一遍是多余的
                     onToggleSelecting()
@@ -527,28 +580,136 @@ private fun ShortcutBar(items: List<Pair<String, String>>, onJump: (String) -> U
 }
 
 /**
- * 筛选输入框。**只在菜单里点开后才出现**。
+ * 搜索条。**只在菜单里点开后出现**。
  *
- * 原来它和「导入」一起占一整行，而两件事都是偶尔用一次 ——
- * 常驻一行就是每次浏览都在付的成本。
+ * 两档范围共用这一个框：`本层` 是瞬时的（就是原来的「筛选」），`含子目录` 才会真的
+ * 递归下去。既然叫搜索，**默认给 `含子目录`** —— 用户输入一个文件名的期待就是
+ * 「不管它在哪一层」。想快的时候自己切回「本层」。
+ *
+ * 搜索是**按按钮触发**的，不是边打边搜：递归扫描可能要几秒，
+ * 每敲一个字扫一遍纯属浪费，而且结果会在打字过程中乱跳。
  */
 @Composable
-private fun QuickSearch(filter: String, onFilter: (String) -> Unit, onClose: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun SearchBar(
+    text: String,
+    recursive: Boolean,
+    search: SearchState?,
+    onText: (String) -> Unit,
+    onScope: (Boolean) -> Unit,
+    onRun: () -> Unit,
+    onCancel: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = onText,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                placeholder = { Text("搜索文件名") },
+            )
+            Spacer(Modifier.width(8.dp))
+            if (search?.running == true) {
+                TextButton(onClick = onCancel) { Text("停止") }
+            } else {
+                TextButton(onClick = onRun) { Text("搜索") }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ScopeChip("本层", on = !recursive) { onScope(false) }
+            ScopeChip("含子目录", on = recursive) { onScope(true) }
+            Spacer(Modifier.weight(1f))
+            // 扫描中必须有个东西在动，否则几秒的长扫描看起来就是卡死
+            val note = when {
+                search == null -> ""
+                search.running -> "已看 ${search.scanned} 项 · 命中 ${search.hits.size}"
+                search.cancelled -> "已停止 · 命中 ${search.hits.size}"
+                search.truncated -> "命中 ${search.hits.size}（到上限，可能还有更多）"
+                else -> "命中 ${search.hits.size}"
+            }
+            if (note.isNotEmpty()) {
+                Text(
+                    note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onClose) { Text("关掉") }
+        }
+    }
+}
+
+@Composable
+private fun ScopeChip(label: String, on: Boolean, onClick: () -> Unit) {
+    Surface(
+        color = if (on) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.clickable(onClick = onClick),
     ) {
-        OutlinedTextField(
-            value = filter,
-            onValueChange = onFilter,
-            modifier = Modifier.weight(1f),
-            singleLine = true,
-            placeholder = { Text("筛选名字") },
+        Text(
+            label,
+            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (on) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.width(8.dp))
-        // 关掉时**同时清空关键词**：只收框不清词的话，用户关了筛选却还在筛，
-        // 会以为文件少了 —— 这种「看不见的生效条件」最难自查
-        TextButton(onClick = { onFilter(""); onClose() }) { Text("关掉") }
+    }
+}
+
+/**
+ * 搜索结果。
+ *
+ * 每行**必须显示它所在的目录**：结果来自不同目录，只显示名字的话，
+ * 一堆同名文件（`config.json` 这种）根本分不清哪个是哪个。
+ *
+ * 点一行是**跳到它所在的目录**，不是直接打开文件 —— 搜索的用途是找到东西在哪，
+ * 而看到它周围有什么通常才是下一步要做的。
+ */
+@Composable
+private fun SearchHits(hits: List<FsItem>, onReveal: (FsItem) -> Unit) {
+    if (hits.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "没有匹配的条目",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize()) {
+        items(hits, key = { it.path }) { item ->
+            Row(
+                Modifier.fillMaxWidth().clickable { onReveal(item) }
+                    .padding(horizontal = SmithySpacing.rowHorizontal, vertical = SmithySpacing.rowVertical),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        (if (item.dir) "📁 " else "📄 ") + item.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        item.path.substringBeforeLast('/', ""),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = SmithyMono,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (!item.dir) {
+                    Text(
+                        humanSize(item.size),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = SmithyMono,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -574,7 +735,7 @@ private fun MoreMenu(searching: Boolean, onImport: () -> Unit, onToggleSearch: (
                 onClick = { open = false; onImport() },
             )
             DropdownMenuItem(
-                text = { Text(if (searching) "关闭筛选" else "筛选名字") },
+                text = { Text(if (searching) "关闭搜索" else "搜索") },
                 onClick = { open = false; onToggleSearch() },
             )
         }
@@ -593,13 +754,19 @@ private fun DirList(
     onToggleSelected: (String) -> Unit,
     onViewHex: (FsItem) -> Unit,
     onEnterSelection: (FsItem) -> Unit,
+    onRevealHit: (FsItem) -> Unit,
 ) {
+    // 搜索结果显示在这个位置（列表区），但**不是** DirList 的内容：
+    // 那些条目不在当前目录，多选/改名/复制都不该作用在它们身上 ——
+    // 所以是整屏换掉，不是往列表里塞
+    state.search?.let { s ->
+        SearchHits(s.hits, onRevealHit)
+        return
+    }
     var menuFor by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<FsItem?>(null) }
     var deleting by remember { mutableStateOf<FsItem?>(null) }
-    val filtered = state.items.filter {
-        state.filter.isBlank() || it.name.contains(state.filter, ignoreCase = true)
-    }
+    val filtered = state.items
     if (filtered.isEmpty()) {
         Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             Text(

@@ -190,7 +190,6 @@ fun SmithyRoot(
                     onOpenDir = filesVm::openDir,
                     onOpenItem = filesVm::open,
                     onGoUp = filesVm::goUp,
-                    onFilter = filesVm::onFilter,
                     onCloseZip = filesVm::closeZip,
                     onReplaceEntry = { entry ->
                         replacingEntry = entry
@@ -233,6 +232,10 @@ fun SmithyRoot(
                     onHexPage = filesVm::hexPage,
                     onHexSave = filesVm::hexSave,
                     onRequestAccess = requestStorageAccess,
+                    onSearch = filesVm::startSearch,
+                    onCancelSearch = filesVm::cancelSearch,
+                    onCloseSearch = filesVm::closeSearch,
+                    onRevealHit = filesVm::revealHit,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(

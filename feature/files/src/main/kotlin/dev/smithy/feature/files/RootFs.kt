@@ -1,6 +1,7 @@
 package dev.smithy.feature.files
 
 import com.topjohnwu.superuser.Shell
+import dev.smithy.fs.FsItem
 import java.io.File
 
 /**
