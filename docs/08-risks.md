@@ -82,29 +82,58 @@
 
 ## 八、M1 实测结论（都是踩过的坑，别再踩）
 
-### 8.1 签名：v1 不可用，因此 minSdk < 24 的包不支持
+### 8.1 v1 签名：apksig 的路径坏了，所以自己实现了一份
 
-`apksig-android 4.4.0` 在生成 v1 签名的 `MANIFEST.MF` 时抛 NPE：
+**为什么需要 v1**：`minSdk < 24` 的包必须带 v1（JAR）签名 —— Android 7.0 之前只认它。
+只签 v2/v3 的话，包在 Android 5/6 上装不上，而 `minSdk` 声明又骗着人以为支持。
+
+**apksig 的路走不通**：`apksig-android 4.4.0` 生成 v1 清单时抛 NPE：
 
 ```
 java.lang.NullPointerException: Cannot invoke "Object.toString()"
   because the return value of "java.util.Map$Entry.getValue()" is null
-    at com.android.apksig.internal.jar.ManifestWriter.getAttributesSortedByName(ManifestWriter.java:113)
-    at com.android.apksig.internal.apk.v1.V1SchemeSigner.generateManifestFile(V1SchemeSigner.java:382)
+    at com.android.apksig.internal.jar.ManifestWriter.getAttributesSortedByName
+    at com.android.apksig.internal.apk.v1.V1SchemeSigner.generateManifestFile
 ```
 
-已排除调用侧的问题：`Builder.setCreatedBy()` 实现正常（拒绝 null 并存入字段），
-`build()` 也确实把该字段传给了 `ApkSigner` 构造器（字节码逐条确认过）——
-null 产生在库更深处，**外部无法修正**。
+已排除调用侧问题（`setCreatedBy` 正常、`build()` 也确实把值传给了构造器，字节码逐条确认），
+null 出在库更深处。**该库最新版就是 4.4.0，升级无望**。
 
-**处理**：实现里不签 v1。
+**处理：自己实现 v1**（`V1Signer` + `Der` + `Pkcs7`，约 350 行）。
+v1 本身很简单 —— 三个文本文件加一次签名，规范完全公开。
 
-- minSdk ≥ 24（Android 7.0）的系统本来就支持 v2/v3，不开 v1 没有任何损失；
-- minSdk < 24 的包**直接报错**，而不是签一个"只有 v2/v3"的包让它在 Android 6 上装不上
-  —— 后者更糟：改包流程显示成功，装机才失败，而且原因很难看出来。
+| 文件 | 内容 |
+|---|---|
+| `META-INF/MANIFEST.MF` | 每个条目「名字 + 内容摘要」 |
+| `META-INF/SMITHY.SF` | 对 MANIFEST 整体、主属性段、以及每个条目块的摘要 |
+| `META-INF/SMITHY.RSA` | 对 `.SF` 的 PKCS#7 签名（自己写的 DER 编码，没引 BouncyCastle） |
 
-`SignTest` 里有一个**反向用例**盯着这件事：一旦依赖升级后该用例失败，就说明 v1 能用了，
-那时应打开 v1、删掉那个用例并更新本节。
+**四个踩过的坑**（每一个都只报「签名校验失败」之类看不出因果的错）：
+
+1. **文本格式**：换行必须是 `\r\n`；每行上限 **72 字节**，超出要折行且续行以**一个空格**开头。
+2. **`SHA-256-Digest-Manifest-Main-Attributes` 不能省**：少了它 apksig 判定整个 `.SF` 无效，
+   报出来的却是「各条目块摘要不匹配、Expected/actual 都是 null」，指不到这里。
+   「main section」= 从开头到第一个空行**含**那个空行（拿 jarsigner 的产物反推确定的）。
+3. **`issuerX500Principal.encoded` 本身就是完整的 DER SEQUENCE**，再套一层 `SEQUENCE(...)`
+   会让 apksig 的 `Certificate.findCertificate` 抛 `improperly specified input name`。
+4. **搬运条目时 STORED 条目必须设 `size`/`compressedSize`/`crc`**，否则 `ZipOutputStream`
+   直接抛 `STORED entry missing size, compressed size, or crc-32`。
+   `.so` 与 `resources.arsc` 都是 STORED，必然踩中。
+
+**与 apksig 的协作顺序**：**先自己写 v1 → 再让 apksig 加 v2/v3**。反过来不行 ——
+v2 的签名覆盖整个包，先加 v2 再往包里加文件会让它失效。而 apksig 默认会**删掉别的
+签名者的签名文件**（实测删完老系统报 `Missing META-INF/MANIFEST.MF`），所以必须开
+`setOtherSignersSignaturesPreserved(true)` 把 v1 留住。
+
+**验证方式**：`V1SignTest` 盯住格式与「条目内容逐字节未变」；「能不能被 Android 接受」
+交给 Android 官方 `apksigner`（脚本 `.devenv/apksigner-compare2.sh`）：
+
+- API 21-23 范围 → `Verifies`，`Verified using v1 scheme: true`
+- 当前平台范围 → `Verifies`，v2/v3 `true`
+
+**一个要留意的现象**：apksig 的 `ApkVerifier`（Java 库）在 `targetSdk 35` 的包上会报一条
+「main section 摘要不匹配」（Expected/actual 都是 null），而官方 `apksigner` 对同一产物判
+`Verifies`。所以测试里只用它断言「签名者与证书被识别出来」，不拿它当通过判据。
 
 ### 8.2 dexlib2 的 Rewriter 每层返回惰性代理
 

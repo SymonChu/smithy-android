@@ -46,8 +46,9 @@ class SignTest {
             result.messages.take(5).forEach { println("     $it") }
 
             assertTrue(result.valid, "自签名的包必须验签通过")
-            // v1 不开：minSdk 26 的系统用 v2/v3 就够；而且当前 apksig 版本的 v1 路径会 NPE
-            assertEquals(listOf(2, 3), result.schemes.sorted(), "应有 v2/v3；v1 在本依赖版本上不可用")
+            // minSdk 26 的包不需要 v1（v2/v3 就够）。v1 由 V1Signer 在 minSdk < 24 时自己写，
+            // 这条路不走 apksig —— 它的 v1 生成路径一跑就 NPE
+            assertEquals(listOf(2, 3), result.schemes.sorted(), "minSdk>=24 的包应有 v2/v3")
             assertTrue(
                 signed.length() > 0 && signed.length() != unsigned.length(),
                 "签名会在包里加入 META-INF 与签名块，大小应当变化",
@@ -119,14 +120,13 @@ class SignTest {
     }
 
     /**
-     * 这不是一个"功能正常"的用例，而是把**已知限制**钉在测试里：
-     * 当前 apksig-android 4.4.0 走 v1 会 NPE（库内部问题，外部修不了）。
+     * apksig 的 v1 路径仍然是坏的（所以 v1 由 [dev.smithy.engine.internal.V1Signer] 自己做）。
      *
-     * 一旦将来升级依赖后这条断言开始失败，就说明 v1 能用了 ——
-     * 那时应当把 v1 打开、删掉本用例与 docs/08-risks.md 里的限制说明。
+     * 留这个用例是当哨兵：哪天依赖升级后它开始通过，说明可以用回 apksig —— 但没必要换，
+     * 自实现的版本已经通过 Android 官方 `apksigner` 验证（见 `V1SignTest`）。
      */
     @Test
-    fun `已知限制 v1 签名在当前 apksig 版本上失败`() = runBlocking {
+    fun `apksig 直接签 v1 仍然失败 所以 v1 由自己实现`() = runBlocking {
         val sample = requireSample()
         val material = dev.smithy.engine.internal.Keystores.loadOrCreate(
             File("/tmp/smithy-ks-v1-limit"),

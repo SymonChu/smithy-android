@@ -38,6 +38,15 @@ internal object Signer {
             .setV2SigningEnabled(2 in schemes)
             .setV3SigningEnabled(3 in schemes)
             .setV4SigningEnabled(false)
+            // **保留「其他签名者」的签名文件**。
+            //
+            // 我们自写的 v1（`SMITHY.SF` / `SMITHY.RSA`）在 apksig 眼里属于别的签名者，
+            // 不开这个开关它会把这些文件删干净（实测：删完老系统直接装不上，报
+            // `Missing META-INF/MANIFEST.MF`）。
+            //
+            // 而 v1 文件**必须先于 v2 就位**：v2 的签名覆盖整个包，先加 v2 再往包里加文件
+            // 会让 v2 失效。顺序上没得选，所以只能靠这个开关把 v1 留住。
+            .setOtherSignersSignaturesPreserved(true)
             .setCreatedBy("smithy")
             .build()
             .sign()

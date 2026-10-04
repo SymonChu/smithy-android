@@ -719,18 +719,15 @@ internal class ApkProjectImpl(
             throw IllegalStateException("当前状态 $state 不允许签名")
         }
 
-        // 不签 v1。两个理由：
-        //  ① Android 7.0 (API 24) 起系统支持 v2/v3，更新的系统根本不看 v1 —— minSdk >= 24 时它纯属多余；
-        //  ② 当前依赖的 apksig-android 4.4.0 在生成 v1 的 MANIFEST.MF 时会 NPE
-        //     （库内部把某个属性值弄成了 null，已确认不是调用参数的问题，外部无法修正）。
-        // 于是 minSdk < 24 的包我们直接报错 —— 那种包必须靠 v1 才能被老系统接受，
-        // 签一个"只有 v2/v3"的包给 Android 6 会装不上，比提前报错更糟。
-        if (apiLevel < 24) {
-            throw UnsupportedOperationException(
-                "minSdk=$apiLevel 的包需要 v1 签名，但当前 apksig 版本无法生成 v1 清单。" +
-                    "见 docs/08-risks.md 的「签名」一节；可先把 minSdk 提到 24+ 再改。",
-            )
-        }
+        // v1 分两种情况处理：
+        //  - minSdk >= 24：不需要它。apksig 只签 v2/v3（它也签不了 v1 —— 一生成清单就 NPE）
+        //  - minSdk < 24：**必须**有它，否则 Android 5/6 装不上。既然 apksig 那条路断了，
+        //    就自己写（[V1Signer]，规范很短，实现已被 Android 官方 apksigner 验证通过）
+        //
+        // **顺序不能反**：`V1Signer` 会重写整个 zip（签名文件要进包），
+        // 而 apksig 加 v2/v3 是在 zip 上附加一个签名块、不动条目 ——
+        // 反过来做的话，重写 zip 会把 apksig 刚加的签名块整块丢掉。
+        val needV1 = apiLevel < 24
         val schemes = config.schemes.filter { it != 1 }.toSet()
         require(schemes.isNotEmpty()) { "至少要保留一种签名方案（v2 或 v3）" }
 
@@ -738,12 +735,21 @@ internal class ApkProjectImpl(
         val material = Keystores.loadOrCreate(keystoreDir)
         val out = File(tmpDir("signed"), "${meta.packageName}-signed.apk")
         try {
+            val forV2 = if (needV1) {
+                val mid = File(tmpDir("signed"), "${meta.packageName}-v1.apk")
+                V1Signer.sign(input, mid, material.privateKey, material.certificates)
+                mid
+            } else {
+                input
+            }
             Signer.sign(
-                input = input,
+                input = forV2,
                 output = out,
                 privateKey = material.privateKey,
                 certificates = material.certificates,
-                minSdk = apiLevel,
+                // 报 24 而不是真实值：apksig 在 minSdk < 24 时会坚持「必须有 v1」，
+                // 而它的 v1 路径是坏的。v1 已经由 V1Signer 写好了，这里只让它加 v2/v3。
+                minSdk = apiLevel.coerceAtLeast(24),
                 schemes = schemes,
             )
             lastSigned = out
