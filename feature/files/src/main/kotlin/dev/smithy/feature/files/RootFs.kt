@@ -15,9 +15,20 @@ import java.io.File
  */
 object RootFs {
 
-    /** 有没有拿到 root 授权。 */
-    fun isGranted(): Boolean =
-        runCatching { Shell.isAppGrantedRoot() == true }.getOrDefault(false)
+    /**
+     * 有没有拿到 root 授权。
+     *
+     * **必须先 `getShell()`**：`isAppGrantedRoot()` 在 shell 还没启动时返回 `null`
+     * （它不负责启动 shell）。只读它的话，第一次进文件页永远是「没有 root」——
+     * 表现为**有 root 的设备也一直只能看应用自己的目录**，而界面上不会说为什么。
+     *
+     * `getShell()` 会真的去要一次授权（时机正好：用户刚打开文件页）。
+     * 设备没有 root 时它返回一个非 root shell，不会抛异常。
+     */
+    fun isGranted(): Boolean = runCatching {
+        Shell.getShell()
+        Shell.isAppGrantedRoot() == true
+    }.getOrDefault(false)
 
     /**
      * 列目录。

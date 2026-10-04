@@ -103,6 +103,7 @@ fun FilesScreen(
     onHexGoto: (String) -> Unit,
     onHexPage: (Int) -> Unit,
     onHexSave: (String, String) -> Unit,
+    onRequestAccess: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
@@ -182,6 +183,10 @@ fun FilesScreen(
             Row(Modifier.weight(1f)) {
                 Column(Modifier.weight(1f)) {
                     DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
+                    val acc = state.storageAccess
+                    if (!state.rootMode && acc != null && acc != StorageAccess.State.Granted) {
+                        StorageAccessBar(acc, onRequestAccess)
+                    }
                     FilterRow(state.filter, onFilter, onImport)
                     ShortcutBar(shortcuts(), onJumpTo)
                     DirToolbar(
@@ -238,6 +243,10 @@ fun FilesScreen(
             }
         } else if (zip == null) {
             DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
+            val acc = state.storageAccess
+            if (!state.rootMode && acc != null && acc != StorageAccess.State.Granted) {
+                StorageAccessBar(acc, onRequestAccess)
+            }
             FilterRow(state.filter, onFilter, onImport)
             ShortcutBar(shortcuts(), onJumpTo)
             DirToolbar(
@@ -396,6 +405,34 @@ private fun DirToolbar(
         }
         TextButton(onClick = onNewFile, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
             Text("新建文件", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+/**
+ * 看不到手机文件时的提示条。
+ *
+ * **必须有这一条**：文件管理器打开是空的，用户分不清是权限、路径、还是应用坏了。
+ * 把原因和「去哪打开」都摆在眼前，比让他自己猜要省事得多 ——
+ * 尤其 Android 11+ 的「所有文件访问」**没有弹窗**，不去系统设置里点开就永远没有。
+ */
+@Composable
+private fun StorageAccessBar(state: StorageAccess.State, onRequest: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                StorageAccess.reasonFor(state),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = onRequest) {
+                Text(if (state == StorageAccess.State.Blocked) "去应用详情" else "去授权")
+            }
         }
     }
 }

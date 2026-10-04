@@ -1,6 +1,8 @@
 package dev.smithy
 
 import android.app.Application
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -19,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -29,6 +32,7 @@ import dev.smithy.feature.chat.ChatScreen
 import dev.smithy.feature.chat.ChatSettingsScreen
 import dev.smithy.feature.chat.ChatViewModel
 import dev.smithy.feature.files.FilesScreen
+import dev.smithy.feature.files.StorageAccess
 import dev.smithy.feature.files.FilesViewModel
 
 class MainActivity : ComponentActivity() {
@@ -44,6 +48,15 @@ class MainActivity : ComponentActivity() {
      */
     private val incoming = mutableStateOf<Uri?>(null)
 
+    /**
+     * 每次 `onResume` 加一。
+     *
+     * 用来告诉界面「刚从别处回来」。最要紧的场景是**从系统设置页打开「所有文件访问」
+     * 之后回来** —— 权限变了但界面不会自己知道，还停在应用沙盒目录里，
+     * 用户会以为授权没生效。
+     */
+    private val resumeTick = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         incoming.value = incomingUriOf(intent)
@@ -51,8 +64,14 @@ class MainActivity : ComponentActivity() {
             SmithyRoot(
                 incomingUri = incoming.value,
                 onIncomingConsumed = { incoming.value = null },
+                resumeTick = resumeTick.intValue,
             )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumeTick.intValue++
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -83,6 +102,7 @@ private enum class Tab(val label: String) {
 fun SmithyRoot(
     incomingUri: Uri? = null,
     onIncomingConsumed: () -> Unit = {},
+    resumeTick: Int = 0,
 ) {
     var tab by remember { mutableStateOf(Tab.Apk) }
 
@@ -91,6 +111,29 @@ fun SmithyRoot(
     val chatVm = remember { ChatViewModel(app) }
     val chatState by chatVm.state.collectAsState()
     val filesVm = remember { FilesViewModel(app) }
+
+    // 从别处回来时重判一次访问能力。最要紧的场景是**去系统设置打开「所有文件访问」
+    // 之后回来** —— 权限变了界面不会自己知道，还停在应用沙盒里
+    LaunchedEffect(resumeTick) { filesVm.refreshAccess() }
+
+    // 「所有文件访问」（Android 11+）**没有弹窗可要**，只能把人送到系统设置那一页
+    val openStorageSettings = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { filesVm.refreshAccess() }
+
+    // Android 10 及以下还有普通运行时权限，能直接弹
+    val askStoragePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { filesVm.refreshAccess() }
+
+    val ctx = LocalContext.current
+    val requestStorageAccess: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            openStorageSettings.launch(StorageAccess.settingsIntent(ctx))
+        } else {
+            askStoragePermission.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
     val filesState by filesVm.state.collectAsState()
 
     // 替换包内条目：先选设备上的文件，再把它读进待改动列表
@@ -183,6 +226,7 @@ fun SmithyRoot(
                     onHexGoto = filesVm::hexGoto,
                     onHexPage = filesVm::hexPage,
                     onHexSave = filesVm::hexSave,
+                    onRequestAccess = requestStorageAccess,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(

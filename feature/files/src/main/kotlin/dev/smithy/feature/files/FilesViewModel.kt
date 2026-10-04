@@ -96,6 +96,14 @@ data class FilesUiState(
     /** 十六进制查看状态（null = 没在看）。 */
     val hex: HexState? = null,
 
+    /**
+     * 能不能读手机上的文件（`/sdcard`）。
+     *
+     * null = 还没判断过。**这个状态必须显示出来**：看不到手机文件时，用户分不清是
+     * 权限没给、路径不对、还是应用坏了 —— 而「打开是空的」是最难自查的状态。
+     */
+    val storageAccess: StorageAccess.State? = null,
+
     /** 是否处于多选状态。 */
     val selecting: Boolean = false,
 
@@ -181,6 +189,13 @@ data class HexState(
 private const val HEX_WINDOW = 4096
 
 /**
+ * 用户的共享存储。用 `/sdcard` 这个路径而不是 `Environment.getExternalStorageDirectory()`：
+ * 后者在部分设备上返回 `/storage/emulated/0`，而用户（和 shell）认的是 `/sdcard`，
+ * 界面上显示哪个、我们内部用哪个要一致，否则路径看起来会前后不一样。
+ */
+private const val SDCARD = "/sdcard"
+
+/**
  * 文件管理 + zip 直改。
  *
  * **浏览是完整的文件管理器**：有 root 就自动用它（落在 `/sdcard`），能进系统分区、
@@ -201,18 +216,48 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     private val rootDir: File = app.getExternalFilesDir(null) ?: app.filesDir
 
     init {
-        // 先落在能立刻用的地方，然后**后台**问一次 root —— 没有 root 的人不该看到
-        // 一个卡住的界面，有 root 的人也不该先看到一堆进不去的目录。
+        // 先落在能立刻用的地方，然后**后台**判断两件事：
+        //  1. 有没有 root —— 有就落到 `/sdcard`（用户真正常去的地方：下载、聊天记录、
+        //     别人发来的包）
+        //  2. 没有 root 的话，有没有「所有文件访问」—— 有也能落到 `/sdcard`
         //
-        // 有 root 就落到 `/sdcard`：那是用户真正常去的地方（下载、聊天记录、
-        // 别人发来的包）。而不是「先给你个受限的，等你撞墙了再自己找开关切」。
+        // 两者都没有时**必须把原因写出来**。看不到手机文件却只显示一个空目录，
+        // 用户分不清是权限、路径、还是应用坏了。
         openDir(rootDir.absolutePath)
-        viewModelScope.launch {
-            val granted = withContext(Dispatchers.IO) { RootFs.isGranted() }
-            if (granted) {
-                _state.update { it.copy(rootMode = true) }
-                openDir("/sdcard")
-            }
+        viewModelScope.launch { probeAccess() }
+    }
+
+    /**
+     * 重新判断访问能力。
+     *
+     * 从系统设置页回来时必须再调一次 —— 「所有文件访问」没有弹窗，
+     * 用户是去系统设置里手动打开的，回来时权限可能刚变化。
+     */
+    fun refreshAccess() {
+        viewModelScope.launch { probeAccess() }
+    }
+
+    private suspend fun probeAccess() {
+        val root = withContext(Dispatchers.IO) { RootFs.isGranted() }
+        val access = StorageAccess.state(getApplication())
+        val canSeeFiles = root || access == StorageAccess.State.Granted
+        val cur = _state.value
+
+        _state.update {
+            it.copy(
+                rootMode = root,
+                storageAccess = access,
+                // 原因由界面上的提示条来说（它带「去授权」按钮，是可操作的那一处）。
+                // 这里再写一遍就成了同一句话在一屏上出现两次
+                message = null,
+                isError = false,
+            )
+        }
+
+        // 已经能看 /sdcard 了却还待在应用沙盒里 → 挪过去。
+        // 只在「还在沙盒」时挪，免得把用户自己切到的目录顶掉
+        if (canSeeFiles && cur.dir.startsWith(rootDir.absolutePath)) {
+            openDir(SDCARD)
         }
     }
 
