@@ -47,6 +47,14 @@ enum class WorkbenchTab(val label: String) {
     RESOURCES("资源"),
     FILES("文件"),
     PATCHES("改动"),
+    /**
+     * 模块（Magisk / Zygisk）。
+     *
+     * 和上面几个放在同一页，因为**它们都是「处理一个包」**，只是包的种类不同：
+     * apk 有资源表和签名，模块 zip 只有纯文本和 so。分成两个顶部页面时，
+     * 用户要先想「这个东西属于哪种包」才能找到入口；放在一页里就只是换个标签。
+     */
+    MODULE("模块"),
 }
 
 enum class CodeView(val label: String) { JAVA("Java"), SMALI("smali") }

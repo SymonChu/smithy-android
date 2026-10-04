@@ -1,4 +1,4 @@
-package dev.smithy.feature.files
+package dev.smithy.feature.apk
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column

@@ -1,4 +1,4 @@
-package dev.smithy.feature.files
+package dev.smithy.feature.apk
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel

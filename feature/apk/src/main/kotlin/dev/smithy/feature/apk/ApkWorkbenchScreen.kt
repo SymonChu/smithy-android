@@ -24,6 +24,12 @@ import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,40 +80,112 @@ fun ApkWorkbenchScreen(
         contract = ActivityResultContracts.CreateDocument("text/markdown"),
     ) { uri -> uri?.let(vm::exportReport) }
 
-    Box(modifier.fillMaxSize()) {
-        when (val phase = state.phase) {
-            is Phase.Empty -> EmptyState(pick)
-            is Phase.Loading -> LoadingState(phase.stage)
-            is Phase.Failed -> FailedState(phase, pick)
-            is Phase.Ready -> ReadyContent(
-                state = state,
-                vm = vm,
-                onPick = pick,
-                onPickIcon = { iconPicker.launch(arrayOf("image/*")) },
-                onExportReport = {
-                    reportSaver.launch("${state.meta?.packageName ?: "apk"}-report.md")
-                },
-            )
+    // 模块是同一页里的另一种包，所以它有自己的状态机，和 apk 那个互不干扰
+    val moduleVm: ModuleViewModel = viewModel()
+    val moduleState by moduleVm.state.collectAsState()
+
+    // 模块 zip 要反复 seek（它是 zip），而 OpenDocument 只给 URI —— 先拷进缓存目录。
+    // 和「导入包」那边同一个理由：URI 流不支持随机访问
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val modulePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val dst = withContext(Dispatchers.IO) {
+                    val f = File(ctx.cacheDir, "module-${System.currentTimeMillis()}.zip")
+                    ctx.contentResolver.openInputStream(uri)?.use { input ->
+                        f.outputStream().use { input.copyTo(it) }
+                    }
+                    f
+                }
+                moduleVm.open(dst.absolutePath)
+            }
+        }
+    }
+
+    Column(modifier.fillMaxSize()) {
+        // 标签行常驻在「有 apk」或「停在模块标签」时。
+        // apk 那几档在没打开包时点了也没内容，所以那种情况下不显示整行，
+        // 而是在空状态里给一个「打开模块 zip」的入口
+        if (state.phase is Phase.Ready || state.tab == WorkbenchTab.MODULE) {
+            ScrollableTabRow(selectedTabIndex = state.tab.ordinal, edgePadding = 0.dp) {
+                WorkbenchTab.entries.forEach { t ->
+                    Tab(
+                        selected = state.tab == t,
+                        onClick = { vm.selectTab(t) },
+                        text = { Text(t.label) },
+                    )
+                }
+            }
+        }
+
+        Box(Modifier.weight(1f)) {
+            if (state.tab == WorkbenchTab.MODULE) {
+                ModuleScreen(
+                    state = moduleState,
+                    onOpen = { modulePicker.launch(arrayOf("*/*")) },
+                    onClose = moduleVm::close,
+                    onVersion = moduleVm::onVersion,
+                    onVersionCode = moduleVm::onVersionCode,
+                    onName = moduleVm::onName,
+                    onDescription = moduleVm::onDescription,
+                    onSaveProp = moduleVm::saveProp,
+                    onEditEntry = moduleVm::startEdit,
+                    onEditingText = moduleVm::updateEditing,
+                    onCancelEdit = moduleVm::cancelEdit,
+                    onSaveEntry = moduleVm::saveEntry,
+                    onInstall = moduleVm::install,
+                    onSetEnabled = moduleVm::setEnabled,
+                    onScheduleRemove = moduleVm::scheduleRemove,
+                    onUninstall = moduleVm::uninstallNow,
+                    onRestartZygote = moduleVm::restartZygote,
+                    onRefresh = moduleVm::refreshInstalled,
+                )
+            } else {
+                when (val phase = state.phase) {
+                    is Phase.Empty -> EmptyState(pick, onOpenModule = { vm.selectTab(WorkbenchTab.MODULE) })
+                    is Phase.Loading -> LoadingState(phase.stage)
+                    is Phase.Failed -> FailedState(phase, pick)
+                    is Phase.Ready -> ReadyContent(
+                        state = state,
+                        vm = vm,
+                        onPick = pick,
+                        onPickIcon = { iconPicker.launch(arrayOf("image/*")) },
+                        onExportReport = {
+                            reportSaver.launch("${state.meta?.packageName ?: "apk"}-report.md")
+                        },
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun EmptyState(onPick: () -> Unit) {
+private fun EmptyState(onPick: () -> Unit, onOpenModule: () -> Unit) {
     Column(
         Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("还没有打开任何 APK", style = MaterialTheme.typography.titleMedium)
+        Text("还没有打开任何包", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "选一个安装包：看它的构成，改里面的文案或代码，再打包签名装回手机",
+            "apk：看它的构成，改里面的文案或代码，再打包签名装回手机",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "模块：Magisk / Zygisk 模块 zip 的查看、改动、打包与刷入",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(20.dp))
         Button(onClick = onPick) { Text("选择 APK") }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onOpenModule) { Text("打开模块 zip") }
         Spacer(Modifier.height(12.dp))
         Text(
             "请只处理你自己有权分析的包",
@@ -180,16 +258,7 @@ private fun ReadyContent(
             TextButton(onClick = vm::close) { Text("关闭") }
         }
 
-        // 标签涨到五个，小屏上会挤，用可横向滚动的版本
-        ScrollableTabRow(selectedTabIndex = state.tab.ordinal, edgePadding = 0.dp) {
-            WorkbenchTab.entries.forEach { t ->
-                Tab(
-                    selected = state.tab == t,
-                    onClick = { vm.selectTab(t) },
-                    text = { Text(t.label) },
-                )
-            }
-        }
+        // 标签行已经在上一级渲染了（它要同时服务于没打开 apk 的模块标签）
 
         Box(Modifier.weight(1f)) {
             when (state.tab) {
@@ -243,6 +312,9 @@ private fun ReadyContent(
                 )
 
                 WorkbenchTab.PATCHES -> PatchesTab(state = state, onRevert = vm::revert)
+                // 模块标签在上一级就分流出去了（它不依赖已打开的 apk）。
+                // 这里列出来只是为了让 when 穷尽 —— 编译器不认「上面已经拦过」
+                WorkbenchTab.MODULE -> Unit
             }
         }
 
