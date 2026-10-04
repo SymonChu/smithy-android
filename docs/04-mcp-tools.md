@@ -37,15 +37,15 @@
 ## 资源层
 | 工具 | Effect | 参数 | 说明 |
 |---|---|---|---|
-| `arsc.list` | R | workspaceId, type?, filter? | 资源表条目 |
-| `arsc.get` | R | workspaceId, resName | 如 `@string/app_name` |
-| `arsc.set` | W | workspaceId, resName, value | 单条修改 |
-| `arsc.replace_string` | W | workspaceId, from, to, regex? | 批量文案替换（含布局 XML） |
+| `arsc.list` | R | workspaceId, type?, filter? | 资源表条目。filter 同时匹配资源名与值 |
+| `arsc.set` | W | workspaceId, resName, value | 单条修改，如 `@string/app_name` |
+| `arsc.replace_string` | W | workspaceId, pairs[], scope? | 批量文案替换。**scope 缺省 ARSC**（只改资源表，实测 200 组 300ms）；把 dex 也算上的 BOTH 要 27 秒，见 `docs/08` 第十节 |
 | `axml.decode` | R | workspaceId, path | 二进制 XML → 可读 |
 | `axml.patch` | W | workspaceId, path, target, attr, value | 改属性（如 debuggable、exported） |
 | `manifest.set` | W | workspaceId, field, value | appLabel / packageName / versionName / versionCode / debuggable |
 | `icon.replace` | W | workspaceId, source(image/dir), densities? | **P0 卖点**：自动生成各密度 mipmap |
-| `asset.put` / `asset.delete` | W | workspaceId, path, file? | assets 增删 |
+| `asset.put` / `asset.delete` | W | workspaceId, path, file? | 任意条目的增删（不只 assets）；工作台「文件」标签走这条 |
+| `report.export` | R | workspaceId, format? | 生成分析报告（Markdown：基本信息 / 签名 / 权限 / 组件 / DEX 五节）。只读 —— 生成的是文本，写到哪由调用方决定 |
 
 ## 打包链路
 | 工具 | Effect | 参数 | 说明 |

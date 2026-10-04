@@ -42,16 +42,20 @@
 1. ✅ `arsc.list/set/replace_string` —— 含批量入口与作用域，见 `docs/08` 第十节
 2. 🔶 `manifest.set` 已做（应用名 / 包名 / 版本名 / 版本码 / debuggable）；
    `axml.decode/patch` 未做 —— 现在改清单只走 ARSCLib 的结构化字段，任意 xml 节点的增删改还没开
-3. 🔶 `icon.replace` 只做了传统 PNG 图标（mdpi~xxxhdpi）；**adaptive icon 未做**
-4. ⬜ `asset.put/delete`、`zip.*` 直改（引擎的 `writeEntry`/`deleteEntry` 已经够用，缺的是 UI 暴露）
-5. 🔶 工作台「资源」标签已做（列资源 / 改单条 / 批量换文案 / 换图标按钮）；图标预览未做
-6. ⬜ 分析报告导出 Markdown
+3. ✅ `icon.replace` —— 传统 PNG 图标与 adaptive icon 两种都能换，见下方「安全区」
+4. ✅ `asset.put/delete`、`zip.*` 直改 —— 工作台「文件」标签：按路径前缀列条目、替换成设备上的文件、删除
+5. ✅ 工作台「资源」标签（列资源 / 改单条 / 批量换文案 / 换图标）+ 报告导出按钮
+6. ✅ 分析报告导出 Markdown（`ApkReport`：基本信息 / 签名 / 权限 / 组件 / DEX 五节）
 
-**adaptive icon 为什么没做**：它不是一个 PNG，而是 `mipmap-anydpi-v26/ic_launcher.xml`
-声明「前景层 + 背景层」两张图。前景层有安全区 —— 108dp 的画布里只有中间 72dp 保证可见，
-系统还会按启动器做视差与裁切。把用户给的图当整块前景塞进去，在启动器上会被裁掉一圈，
-**正是验收要避免的「变形」**。做对需要单独设计前景/背景的生成规则（按安全区缩放并留边距），
-留下一步做。目前遇到 adaptive icon 的包会明确报错，而不是换一半留下个不一致的图标。
+**adaptive icon 的安全区（做对了才算「不变形」）**：
+它不是一个 PNG，而是 `mipmap-anydpi-v26/ic_launcher.xml` 声明前景 + 背景两层。
+前景层有硬约束 —— 108dp 画布里只有中间 **72dp** 保证可见，系统还会按启动器做视差与裁切。
+所以实现是：**把用户给的图缩到 72/108 再居中贴到 108dp 的透明画布上**（背景层相反，铺满整块）。
+直接铺满会在启动器上被裁掉一圈，那正是验收要避免的「变形」。
+
+背景层如果是 `drawable/ic_launcher_background.xml`（纯色定义）则**不碰** ——
+把它覆盖成 PNG 会连带改掉引用类型（drawable 到 mipmap），风险远大于收益；
+只换前景层已经能让图标明显变样。
 
 **验收**：一个不含 adaptive icon 的老包，替换图标后装机显示正常不变形；批量替换 200 条文案耗时 < 30 秒；导出报告含全部 A1-A5 数据。
 
