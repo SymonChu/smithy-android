@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Compose 应用只需要一个基础主题，真正的样式在 Compose 里 -->
+    <!--
+      Compose 应用只需要一个基础主题，真正的样式在 Compose 里（见 :core:design）。
+
+      这里唯一要管的是**窗口底色**：Compose 首帧画出来之前，用户看到的是窗口背景。
+      写死浅色的话，系统在暗色模式下启动 App 时会有一下刺眼的白闪。
+      所以暗色版本放 values-night/themes.xml，两边都对齐 Compose 那边的 surface 色。
+    -->
     <style name="Theme.Smithy" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">@android:color/background_light</item>
+        <!-- 和 SmithyLightColors 的 surface 一致（#FFFFFF） -->
+        <item name="android:windowBackground">@color/window_background</item>
     </style>
 </resources>

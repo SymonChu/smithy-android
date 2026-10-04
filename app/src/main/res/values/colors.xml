@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 窗口底色，亮色版。和 SmithyLightColors 的 surface 对齐（#FFFFFF）。 -->
+    <color name="window_background">#FFFFFFFF</color>
+</resources>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      暗色下的基础主题。父主题也要换：`Theme.Material.Light` 在暗色系统里会把
+      状态栏图标、文本选择手柄这些系统控件按浅色方案画，在深底上就看不清了。
+    -->
+    <style name="Theme.Smithy" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+</resources>

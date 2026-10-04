@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 窗口底色，暗色版。和 SmithyDarkColors 的 background 对齐（#0F1214）。 -->
+    <color name="window_background">#FF0F1214</color>
+</resources>

@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import dev.smithy.design.SmithyTheme
 import dev.smithy.feature.apk.ApkWorkbenchScreen
 import dev.smithy.feature.chat.ChatScreen
 import dev.smithy.feature.chat.ChatSettingsScreen
@@ -62,11 +63,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         incoming.value = incomingUriOf(intent)
         setContent {
-            SmithyRoot(
-                incomingUri = incoming.value,
-                onIncomingConsumed = { incoming.value = null },
-                resumeTick = resumeTick.intValue,
-            )
+            // 主题套在最外层：整棵界面树都从它取色板/字阶/圆角。
+            // 之前一行主题代码都没有 —— 用的是 M3 内置默认浅色，系统切暗色时界面还是白的
+            SmithyTheme {
+                SmithyRoot(
+                    incomingUri = incoming.value,
+                    onIncomingConsumed = { incoming.value = null },
+                    resumeTick = resumeTick.intValue,
+                )
+            }
         }
     }
 

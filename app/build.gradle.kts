@@ -57,6 +57,8 @@ android {
 }
 
 dependencies {
+    // 设计系统（色板/字阶/圆角/间距）。所有页面共用一套观感
+    implementation(project(":core:design"))
     implementation(project(":core:engine"))
     implementation(project(":core:fs"))
     implementation(project(":core:ai"))

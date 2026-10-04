@@ -24,6 +24,7 @@ include(
     ":core:fs",
     ":core:ai",
     ":core:mcp",
+    ":core:design",
     ":toolkit",
     ":feature:apk",
     ":feature:files",
