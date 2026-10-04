@@ -45,7 +45,10 @@ class AgentLoop(
             var calls = emptyList<ToolCall>()
             var failure: ChatEvent.Failed? = null
 
-            client.stream(messages, registry.toOpenAiSchema()).collect { ev ->
+            // 长对话会撞上下文上限。压缩只截短长的工具结果、不改消息条数，
+            // 所以 assistant 的 tool_calls 与 tool 结果的配对不会被打散
+            val outgoing = ContextCompactor.compact(messages)
+            client.stream(outgoing, registry.toOpenAiSchema()).collect { ev ->
                 when (ev) {
                     is ChatEvent.Text -> {
                         text.append(ev.delta)

@@ -10,6 +10,7 @@ import dev.smithy.ai.AiConfigStore
 import dev.smithy.ai.ChatMessage
 import dev.smithy.ai.DEFAULT_SYSTEM_PROMPT
 import dev.smithy.ai.OpenAiClient
+import dev.smithy.ai.SessionStore
 import dev.smithy.toolkit.ConfirmRequest
 import dev.smithy.toolkit.Effect
 import dev.smithy.toolkit.NoWorkspaceException
@@ -97,10 +98,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
+    private val sessionStore = SessionStore(app)
+
     /** 已确认的对话历史（含工具往返），每轮结束由 AgentLoop 回填 */
     private var history = mutableListOf<ChatMessage>()
     private var job: Job? = null
     private var nextId = 1L
+
+    /** 当前会话 id（落盘用） */
+    private var sessionId: String? = null
+
+    /**
+     * 已经落盘到第几条**协议消息**。
+     *
+     * 落盘按「协议消息」而不是「UI 条目」记账：条目是展示层的投影，
+     * 两者数量对不上，混着记迟早错位。Done / 中断时把新增的补上即可。
+     */
+    private var persistedCount = 0
 
     /**
      * 正在等用户点的确认。
@@ -115,6 +129,54 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(config = cfg, configProblem = configStore.validate(cfg), workspaceName = WorkspaceHolder.currentName)
         }
+        // 恢复上次的会话：改包常要来回十几轮，中途被系统杀掉不该丢掉「改到哪了」
+        viewModelScope.launch {
+            val last = runCatching { sessionStore.sessions().firstOrNull() }.getOrNull()
+            if (last == null) {
+                sessionId = sessionStore.newSessionId()
+            } else {
+                sessionId = last.id
+                history = sessionStore.load(last.id).toMutableList()
+                persistedCount = history.size
+                _state.update { s -> s.copy(items = history.mapIndexedNotNull { i, m -> m.toUiItem(i + 1L) }) }
+                nextId = history.size + 1L
+            }
+        }
+    }
+
+    /**
+     * 协议消息 → 界面条目（只用于恢复历史）。
+     *
+     * 工具结果恢复成「已完成」的卡片：原文已经在上下文里，这里只需让用户看到当时调过什么。
+     * **summary 不落盘**（那是展示层的简述）—— 有意为之：多存一份展示文案，
+     * 就多一处「两边不一致」的隐患。
+     */
+    private fun ChatMessage.toUiItem(itemId: Long): ChatItem? = when (role) {
+        ChatMessage.Role.USER -> ChatItem.User(itemId, content.orEmpty())
+
+        ChatMessage.Role.ASSISTANT ->
+            content?.takeIf { it.isNotBlank() }?.let { ChatItem.Assistant(itemId, it) }
+
+        ChatMessage.Role.TOOL -> ChatItem.Tool(
+            id = itemId,
+            name = "工具结果",
+            args = "",
+            state = ChatItem.Tool.State.OK,
+            summary = content?.take(200),
+        )
+
+        ChatMessage.Role.SYSTEM -> null
+    }
+
+    /** 把还没落盘的协议消息补上。 */
+    private suspend fun persistNew() {
+        val session = sessionId ?: return
+        while (persistedCount < history.size) {
+            val message = history[persistedCount]
+            sessionStore.append(session, message, kind = message.role.name.lowercase())
+            persistedCount++
+        }
+        sessionStore.touchSession(session, title = history.firstOrNull { it.role == ChatMessage.Role.USER }?.content)
     }
 
     private fun id(): Long = nextId++
@@ -169,6 +231,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 先放行挂着的确认，再收尾 —— 顺序反了会留下一个永远等不到的 await
                 pendingConfirm?.complete(false)
                 pendingConfirm = null
+                // 中途停止也要落盘：已经改好的东西不该因为「用户按了停止」就从记录里消失
+                runCatching { persistNew() }
                 _state.update { it.copy(running = false, pendingConfirm = null) }
             }
         }
@@ -181,10 +245,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(running = false, pendingConfirm = null) }
     }
 
+    /**
+     * 开一段新对话。
+     *
+     * **不是删掉当前会话的记录**，而是另起一个：用户点「清空」多半是想换个话题，
+     * 而上一段里「改过哪些东西」还有用（改到一半回头查很常见）。
+     */
     fun clear() {
         stop()
         history.clear()
+        persistedCount = 0
+        nextId = 1
         _state.update { it.copy(items = emptyList()) }
+        viewModelScope.launch {
+            val id = sessionStore.newSessionId()
+            sessionId = id
+            runCatching { sessionStore.createSession(id, "新对话", WorkspaceHolder.currentName) }
+        }
     }
 
     /** 用户在确认条上点了允许/拒绝。 */
@@ -220,6 +297,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             is AgentEvent.Done -> {
                 history = event.messages.toMutableList()
                 markAssistantDone()
+                // 落盘放在 Done 而不是流式过程中：模型可能中途改主意，
+                // 只有这一轮定下来的历史才值得写进库
+                viewModelScope.launch { runCatching { persistNew() } }
             }
 
             is AgentEvent.Failed -> {
