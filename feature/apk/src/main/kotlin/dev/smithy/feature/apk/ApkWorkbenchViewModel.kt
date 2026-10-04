@@ -20,6 +20,7 @@ import dev.smithy.engine.ResourceEntry
 import dev.smithy.engine.SignConfig
 import dev.smithy.engine.StringReplacement
 import dev.smithy.engine.WorkspaceState
+import dev.smithy.toolkit.WorkspaceHolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -132,6 +133,9 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                 closeCurrent()
                 opened = project
                 val meta = project.meta
+                // 告诉对话层现在操作的是哪个包 —— 两边必须是同一个工程实例，
+                // 否则 AI 改的东西用户在这个改动列表里看不到（各开一份会得到两份覆盖层）
+                WorkspaceHolder.set(project, name)
                 _state.value = WorkbenchUiState(
                     phase = Phase.Ready,
                     sourceName = name,
@@ -161,12 +165,15 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         opened?.close(keepArtifacts = false)
         opened = null
+        // 对话层不能再拿着一个已经关掉的工程
+        WorkspaceHolder.clear()
         super.onCleared()
     }
 
     private suspend fun closeCurrent() {
         opened?.let { runCatching { it.close(keepArtifacts = false) } }
         opened = null
+        WorkspaceHolder.clear()
     }
 
     // ── 界面事件 ─────────────────────────────────────────────

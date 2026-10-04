@@ -23,7 +23,9 @@ dependencies {
     implementation(project(":toolkit"))
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
-    implementation(libs.okhttp)
+    // 用 api 而不是 implementation：OpenAiClient 的构造签名里就带 OkHttpClient
+    // （为了允许注入自定义客户端），所以它本来就是公开接口的一部分
+    api(libs.okhttp)
     implementation(libs.okhttp.sse)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
