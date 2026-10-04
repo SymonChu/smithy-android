@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,6 +34,7 @@ internal fun OverviewTab(
     meta: ApkMeta,
     sourceName: String,
     entryCount: Int,
+    onExportReport: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -44,6 +46,10 @@ internal fun OverviewTab(
         DexCard(meta.dexStats)
         PermissionsCard(meta.permissions)
         ComponentsCard(meta.components)
+        Spacer(Modifier.height(4.dp))
+        OutlinedButton(onClick = onExportReport, modifier = Modifier.fillMaxWidth()) {
+            Text("导出报告（Markdown）")
+        }
         Spacer(Modifier.height(16.dp))
     }
 }

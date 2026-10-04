@@ -2,6 +2,7 @@ package dev.smithy.feature.apk
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import dev.smithy.engine.ApkEntry
 import dev.smithy.engine.ApkProject
 import dev.smithy.engine.PatchRecord
@@ -100,5 +101,114 @@ object IconReplacer {
         val x = (src.width - side) / 2
         val y = (src.height - side) / 2
         return Bitmap.createBitmap(src, x, y, side, side)
+    }
+
+    // ── adaptive icon ────────────────────────────────────────
+
+    /** adaptive icon 的画布：108dp 见方，按密度换算成像素。 */
+    private val ADAPTIVE_CANVAS = linkedMapOf(
+        "mdpi" to 108,
+        "hdpi" to 162,
+        "xhdpi" to 216,
+        "xxhdpi" to 324,
+        "xxxhdpi" to 432,
+    )
+
+    /**
+     * 安全区比例：72/108。
+     *
+     * 这是 adaptive icon 最关键的一条规则 —— 108dp 的画布里只有中间 72dp 保证可见，
+     * 系统还会按启动器做视差与裁切。前景内容超出这个范围就会被切掉。
+     */
+    private const val SAFE_RATIO = 72f / 108f
+
+    data class AdaptiveLayers(
+        val foreground: Map<String, String>,
+        val background: Map<String, String>,
+    ) {
+        val isEmpty: Boolean get() = foreground.isEmpty() && background.isEmpty()
+    }
+
+    /**
+     * 找 adaptive icon 的前景 / 背景层（密度 -> 条目路径）。
+     *
+     * 前景层是 `mipmap-*dpi/<base>_foreground.png`；
+     * 背景层可能是 `mipmap-*dpi/<base>_background.png`，也可能是
+     * `drawable/<base>_background.xml`（纯色定义）—— **后者不碰**：
+     * 它是颜色声明而不是图片，覆盖成 PNG 会连带改掉引用类型（drawable -> mipmap），
+     * 风险远大于收益。只换前景层也能让图标明显变样。
+     */
+    fun findAdaptiveLayers(entries: List<ApkEntry>, base: String = "ic_launcher"): AdaptiveLayers {
+        val fg = linkedMapOf<String, String>()
+        val bg = linkedMapOf<String, String>()
+
+        for (e in entries) {
+            if (e.isDirectory || !e.path.startsWith("res/")) continue
+            if (e.path.endsWith(".xml")) continue
+
+            val name = e.path.substringAfterLast('/').substringBeforeLast('.')
+            val density = ADAPTIVE_CANVAS.keys.firstOrNull { e.path.contains("-$it") } ?: continue
+
+            when (name) {
+                "${base}_foreground" -> fg[density] = e.path
+                "${base}_background" -> bg[density] = e.path
+            }
+        }
+        return AdaptiveLayers(fg, bg)
+    }
+
+    /**
+     * 换 adaptive icon 的两层。
+     *
+     * **前景缩到安全区再居中**，不是铺满 —— 铺满会在启动器上被裁掉一圈，
+     * 那正是验收要避免的「变形」。背景则相反：它本来就该铺满整块画布。
+     */
+    suspend fun replaceAdaptive(
+        project: ApkProject,
+        sourceFile: File,
+        layers: AdaptiveLayers,
+    ): List<PatchRecord> {
+        val decoded = BitmapFactory.decodeFile(sourceFile.absolutePath)
+            ?: throw IllegalArgumentException("这张图解不开，换一张 PNG 或 JPG 试试")
+
+        val square = centerCrop(decoded)
+        val out = mutableListOf<PatchRecord>()
+        try {
+            for ((density, path) in layers.foreground) {
+                val canvas = ADAPTIVE_CANVAS[density] ?: continue
+                val inner = (canvas * SAFE_RATIO).toInt()
+                out += project.writeEntry(path, renderOnCanvas(square, canvas, inner).inputStream())
+            }
+            for ((density, path) in layers.background) {
+                val canvas = ADAPTIVE_CANVAS[density] ?: continue
+                out += project.writeEntry(path, renderOnCanvas(square, canvas, canvas).inputStream())
+            }
+        } finally {
+            if (square !== decoded) square.recycle()
+            decoded.recycle()
+        }
+        return out
+    }
+
+    /**
+     * 把图缩放到 [inner] 见方，居中画到 [canvas] 见方的透明画布上，输出 PNG。
+     *
+     * 用透明画布而不是直接缩放：adaptive icon 的层是带 alpha 的，
+     * 前景留白必须真的是透明，涂成黑色会被当成前景的一部分显示出来。
+     */
+    private fun renderOnCanvas(src: Bitmap, canvas: Int, inner: Int): ByteArray {
+        val target = Bitmap.createBitmap(canvas, canvas, Bitmap.Config.ARGB_8888)
+        val scaled = Bitmap.createScaledBitmap(src, inner, inner, true)
+        try {
+            val offset = (canvas - inner) / 2f
+            Canvas(target).drawBitmap(scaled, offset, offset, null)
+            return ByteArrayOutputStream().use { bos ->
+                target.compress(Bitmap.CompressFormat.PNG, 100, bos)
+                bos.toByteArray()
+            }
+        } finally {
+            if (scaled !== src) scaled.recycle()
+            target.recycle()
+        }
     }
 }

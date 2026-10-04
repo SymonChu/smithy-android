@@ -16,8 +16,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,12 +54,25 @@ fun ApkWorkbenchScreen(modifier: Modifier = Modifier) {
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(vm::replaceIcon) }
 
+    // 导出报告：保存位置交给系统选（SAF），不自己猜路径
+    val reportSaver = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/markdown"),
+    ) { uri -> uri?.let(vm::exportReport) }
+
     Box(modifier.fillMaxSize()) {
         when (val phase = state.phase) {
             is Phase.Empty -> EmptyState(pick)
             is Phase.Loading -> LoadingState(phase.stage)
             is Phase.Failed -> FailedState(phase, pick)
-            is Phase.Ready -> ReadyContent(state, vm, pick) { iconPicker.launch(arrayOf("image/*")) }
+            is Phase.Ready -> ReadyContent(
+                state = state,
+                vm = vm,
+                onPick = pick,
+                onPickIcon = { iconPicker.launch(arrayOf("image/*")) },
+                onExportReport = {
+                    reportSaver.launch("${state.meta?.packageName ?: "apk"}-report.md")
+                },
+            )
         }
     }
 }
@@ -130,6 +143,7 @@ private fun ReadyContent(
     vm: ApkWorkbenchViewModel,
     onPick: () -> Unit,
     onPickIcon: () -> Unit,
+    onExportReport: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         // ── 顶栏 ──
@@ -151,7 +165,8 @@ private fun ReadyContent(
             TextButton(onClick = vm::close) { Text("关闭") }
         }
 
-        TabRow(selectedTabIndex = state.tab.ordinal) {
+        // 标签涨到五个，小屏上会挤，用可横向滚动的版本
+        ScrollableTabRow(selectedTabIndex = state.tab.ordinal, edgePadding = 0.dp) {
             WorkbenchTab.entries.forEach { t ->
                 Tab(
                     selected = state.tab == t,
@@ -164,7 +179,12 @@ private fun ReadyContent(
         Box(Modifier.weight(1f)) {
             when (state.tab) {
                 WorkbenchTab.OVERVIEW -> state.meta?.let {
-                    OverviewTab(it, state.sourceName, state.entryCount)
+                    OverviewTab(
+                        meta = it,
+                        sourceName = state.sourceName,
+                        entryCount = state.entryCount,
+                        onExportReport = onExportReport,
+                    )
                 }
 
                 WorkbenchTab.CODE -> CodeTab(
@@ -185,6 +205,14 @@ private fun ReadyContent(
                     onSetResource = vm::setResource,
                     onReplaceMany = vm::replaceMany,
                     onPickIcon = onPickIcon,
+                )
+
+                WorkbenchTab.FILES -> FilesTab(
+                    state = state,
+                    onFilter = vm::setEntryFilter,
+                    onLoad = vm::loadEntries,
+                    onReplace = vm::replaceEntry,
+                    onDelete = vm::deleteEntry,
                 )
 
                 WorkbenchTab.PATCHES -> PatchesTab(state = state, onRevert = vm::revert)

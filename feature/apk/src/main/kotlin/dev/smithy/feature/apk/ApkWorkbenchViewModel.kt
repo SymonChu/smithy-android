@@ -5,9 +5,11 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.smithy.engine.ApkEntry
 import dev.smithy.engine.ApkMeta
 import dev.smithy.engine.ApkProject
 import dev.smithy.engine.ApkProjects
+import dev.smithy.engine.ApkReport
 import dev.smithy.engine.DexHit
 import dev.smithy.engine.DexQuery
 import dev.smithy.engine.InstallVia
@@ -41,6 +43,7 @@ enum class WorkbenchTab(val label: String) {
     OVERVIEW("概览"),
     CODE("代码"),
     RESOURCES("资源"),
+    FILES("文件"),
     PATCHES("改动"),
 }
 
@@ -67,6 +70,10 @@ data class WorkbenchUiState(
     /** 空串表示「全部类型」 */
     val resType: String = "string",
     val resFilter: String = "",
+
+    // ── 文件标签 ──
+    val entries: List<ApkEntry> = emptyList(),
+    val entryFilter: String = "",
 
     // ── 改动标签 ──
     val patches: List<PatchRecord> = emptyList(),
@@ -422,34 +429,78 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 换图标：把用户选的图按各密度缩放后写回。
      *
-     * 只处理传统 PNG 图标（M2 的验收对象是「不含 adaptive icon 的老包」），
-     * 含 adaptive icon 的包会明确告诉用户不支持，而不是换一半留下一个不一致的图标。
+     * 两条路：**优先 adaptive icon**（当代包基本都用它，前景层缩到安全区再居中），
+     * 没有 adaptive 才走传统 PNG 图标。两条都没有就明确报错，不静默什么都不做。
      */
     fun replaceIcon(uri: Uri) {
         val project = opened ?: return
         viewModelScope.launch {
             _state.update { it.copy(busy = "换图标…", message = null, isError = false) }
             try {
-                val entries = IconReplacer.findIconEntries(project.list())
-                if (entries.isEmpty()) {
-                    throw NoSuchElementException(
-                        "这个包里没找到传统图标条目（res/mipmap-<密度>/ic_launcher.png 那一套）。" +
-                            "若它用的是 adaptive icon，本轮还不支持替换 —— 见 docs/06 的 M2 说明",
+                val entries = project.list()
+                val adaptive = IconReplacer.findAdaptiveLayers(entries)
+                val traditional = IconReplacer.findIconEntries(entries)
+
+                val src = copyToCache(uri, "icon-source")
+                val records: List<PatchRecord>
+                val what: String
+
+                when {
+                    !adaptive.isEmpty -> {
+                        records = IconReplacer.replaceAdaptive(project, src, adaptive)
+                        what = "adaptive icon（前景 ${adaptive.foreground.size} 个密度" +
+                            if (adaptive.background.isEmpty()) "，背景是纯色定义未动）" else "，背景也换了）"
+                    }
+
+                    traditional.isNotEmpty() -> {
+                        records = IconReplacer.replace(project, src, traditional)
+                        what = "传统图标 ${traditional.keys.joinToString("、")}"
+                    }
+
+                    else -> throw NoSuchElementException(
+                        "这个包里没找到图标条目（既没有 res/mipmap-*/ic_launcher.png，" +
+                            "也没有 ic_launcher_foreground）。图标名不标准的包目前换不了",
                     )
                 }
 
-                val src = copyToCache(uri, "icon-source")
-                val records = IconReplacer.replace(project, src, entries)
                 refreshPatches()
-
                 _state.update {
                     it.copy(
                         busy = null,
                         workspaceState = project.state,
-                        message = "换了 ${records.size} 个密度：${entries.keys.joinToString("、")}。" +
-                            "重打包签名后装机看效果",
+                        message = "换了 $what，共 ${records.size} 个条目。重打包签名后装机看效果",
                     )
                 }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /**
+     * 导出分析报告到用户选的位置。
+     *
+     * **现算现写，不缓存报告文本**：一次渲染是毫秒级，缓存反而会造出
+     * 「包改了、导出的还是上一份」这种很难察觉的错。
+     */
+    fun exportReport(uri: Uri) {
+        val s = _state.value
+        val meta = s.meta
+        if (meta == null) {
+            _state.update { it.copy(message = "还没有打开任何包", isError = true) }
+            return
+        }
+
+        val text = ApkReport.toMarkdown(meta, s.entryCount, s.sourceName)
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "导出报告…", message = null, isError = false) }
+            try {
+                withContext(Dispatchers.IO) {
+                    getApplication<Application>().contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(text.toByteArray(Charsets.UTF_8))
+                    } ?: throw IllegalStateException("写不进去（对方应用没给写入权限？）")
+                }
+                _state.update { it.copy(busy = null, message = "报告已导出：${text.length} 字符") }
             } catch (t: Throwable) {
                 fail(t)
             }
@@ -465,6 +516,70 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                 // `=` 在开头或没有 `=` 的行不算规则（空白的「旧值」会把所有值都改坏）
                 if (i <= 0) null else StringReplacement(line.substring(0, i), line.substring(i + 1))
             }
+
+    // ── 文件标签：列条目 / 替换条目 / 删除条目 ──────────────
+
+    fun setEntryFilter(f: String) = _state.update { it.copy(entryFilter = f) }
+
+    /**
+     * 列包内条目。
+     *
+     * 过滤是**路径前缀**语义（引擎那边就是 `startsWith`），所以填 `res/` 看资源目录、
+     * 填 `lib/` 看 native 库 —— 这比子串匹配更贴合「按目录看」的用法。
+     */
+    fun loadEntries() {
+        val project = opened ?: return
+        val s = _state.value
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "列条目…", message = null, isError = false) }
+            try {
+                val list = project.list(s.entryFilter.ifBlank { null })
+                _state.update {
+                    it.copy(busy = null, entries = list, message = "列了 ${list.size} 个条目")
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /** 删除条目。它不是立刻消失 —— 是记在覆盖层里，重打包时跳过。 */
+    fun deleteEntry(path: String) {
+        val project = opened ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "删除 $path…", message = null, isError = false) }
+            try {
+                project.deleteEntry(path)
+                refreshPatches()
+                loadEntries()
+                _state.update {
+                    it.copy(message = "已标记删除 $path（重打包后才真正生效，可在「改动」里回退）")
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /** 用设备上的一个文件替换包内条目（图标、配置、任意资源都走这条路）。 */
+    fun replaceEntry(path: String, uri: Uri) {
+        val project = opened ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "替换 $path…", message = null, isError = false) }
+            try {
+                // 先落到缓存再用：content:// 只能顺序读一次，而写入可能要重试
+                val src = copyToCache(uri, path.substringAfterLast('/'))
+                src.inputStream().use { project.writeEntry(path, it) }
+                refreshPatches()
+                loadEntries()
+                _state.update {
+                    it.copy(message = "已替换 $path（重打包后生效）")
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
 
     // ── 改动管理 ─────────────────────────────────────────────
 
