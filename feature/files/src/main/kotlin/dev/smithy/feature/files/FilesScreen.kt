@@ -111,6 +111,10 @@ fun FilesScreen(
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
     // 放进 VM 会让「取消」也要绕一圈去清
     var newTarget by remember { mutableStateOf<String?>(null) }
+
+    // 筛选框的开关。它是**按需出现**的：常驻一行去服务一个偶尔用的功能，
+    // 就是每次浏览都在付的成本
+    var searching by remember { mutableStateOf(false) }
     // 正在改权限的那个路径（null = 没在改）
     var chmodTarget by remember { mutableStateOf<String?>(null) }
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -184,12 +188,32 @@ fun FilesScreen(
             // 并排比上下叠着更贴近它们的关系，而且互不遮挡 —— 改包时能一直看着文件列表
             Row(Modifier.weight(1f)) {
                 Column(Modifier.weight(1f)) {
-                    DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
+                                        DirHeader(
+                        crumbs = breadcrumbs(state.dir),
+                        onJump = onJumpTo,
+                        onGoUp = onGoUp,
+                        rootMode = state.rootMode,
+                        onToggleRoot = onToggleRoot,
+                        clipboard = state.clipboard,
+                        onPaste = onPaste,
+                        onClearClipboard = onClearClipboard,
+                        trailing = {
+                            MoreMenu(
+                                searching = searching,
+                                onImport = onImport,
+                                onToggleSearch = {
+                                    // 关掉筛选时一并清空关键词，否则会「看不见地还在筛」
+                                    if (searching) onFilter("")
+                                    searching = !searching
+                                },
+                            )
+                        },
+                    )
                     val acc = state.storageAccess
                     if (!state.rootMode && acc != null && acc != StorageAccess.State.Granted) {
                         StorageAccessBar(acc, onRequestAccess)
                     }
-                    FilterRow(state.filter, onFilter, onImport)
+                    if (searching) QuickSearch(state.filter, onFilter) { searching = false }
                     ShortcutBar(shortcuts(), onJumpTo)
                     DirToolbar(
                         state.sortBy, state.showHidden, onSort, onToggleHidden,
@@ -216,6 +240,12 @@ fun FilesScreen(
                         onDelete = onDelete,
                         onToggleSelected = onToggleSelected,
                         onViewHex = onViewHex,
+                        onEnterSelection = { item ->
+                            // 进多选并选中刚长按的这一项 —— 用户点「多选」时，
+                            // 意思就是「从我开始」，再让他自己回头勾一遍是多余的
+                            onToggleSelecting()
+                            onToggleSelected(item.path)
+                        },
                     )
                 }
                 VerticalDivider()
@@ -244,12 +274,32 @@ fun FilesScreen(
                 }
             }
         } else if (zip == null) {
-            DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
+                                DirHeader(
+                        crumbs = breadcrumbs(state.dir),
+                        onJump = onJumpTo,
+                        onGoUp = onGoUp,
+                        rootMode = state.rootMode,
+                        onToggleRoot = onToggleRoot,
+                        clipboard = state.clipboard,
+                        onPaste = onPaste,
+                        onClearClipboard = onClearClipboard,
+                        trailing = {
+                            MoreMenu(
+                                searching = searching,
+                                onImport = onImport,
+                                onToggleSearch = {
+                                    // 关掉筛选时一并清空关键词，否则会「看不见地还在筛」
+                                    if (searching) onFilter("")
+                                    searching = !searching
+                                },
+                            )
+                        },
+                    )
             val acc = state.storageAccess
             if (!state.rootMode && acc != null && acc != StorageAccess.State.Granted) {
                 StorageAccessBar(acc, onRequestAccess)
             }
-            FilterRow(state.filter, onFilter, onImport)
+            if (searching) QuickSearch(state.filter, onFilter) { searching = false }
             ShortcutBar(shortcuts(), onJumpTo)
             DirToolbar(
                 state.sortBy, state.showHidden, onSort, onToggleHidden,
@@ -276,6 +326,12 @@ fun FilesScreen(
                 onDelete = onDelete,
                 onToggleSelected = onToggleSelected,
                 onViewHex = onViewHex,
+                onEnterSelection = { item ->
+                    // 进多选并选中刚长按的这一项 —— 用户点「多选」时，
+                    // 意思就是「从我开始」，再让他自己回头勾一遍是多余的
+                    onToggleSelecting()
+                    onToggleSelected(item.path)
+                },
             )
         } else {
             ZipHeader(zip, state.busy)
@@ -300,6 +356,13 @@ private fun DirHeader(
     clipboard: Clipboard?,
     onPaste: () -> Unit,
     onClearClipboard: () -> Unit,
+    /**
+     * 顶栏最右边留给「更多」菜单。
+     *
+     * 用插槽而不是加一堆参数：菜单自己的开关状态属于调用方，
+     * 传成参数的话 DirHeader 会为了一个按钮多知道四五件事
+     */
+    trailing: @Composable () -> Unit = {},
 ) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
         // Column：Surface 只能有一个子元素，而这里要放两行（路径行 + 粘贴提示行）
@@ -339,6 +402,7 @@ private fun DirHeader(
             TextButton(onClick = onToggleRoot) {
                 Text(if (rootMode) "root ●" else "普通")
             }
+            trailing()
             }
             // 粘贴板有东西时，在路径下方单占一行：它是「下一步动作」，位置要显眼 ——
             // 用户刚点了复制/剪切，下一步就是找地方贴，这时不该让他去找按钮
@@ -462,10 +526,16 @@ private fun ShortcutBar(items: List<Pair<String, String>>, onJump: (String) -> U
     }
 }
 
+/**
+ * 筛选输入框。**只在菜单里点开后才出现**。
+ *
+ * 原来它和「导入」一起占一整行，而两件事都是偶尔用一次 ——
+ * 常驻一行就是每次浏览都在付的成本。
+ */
 @Composable
-private fun FilterRow(filter: String, onFilter: (String) -> Unit, onImport: () -> Unit) {
+private fun QuickSearch(filter: String, onFilter: (String) -> Unit, onClose: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         OutlinedTextField(
@@ -475,10 +545,39 @@ private fun FilterRow(filter: String, onFilter: (String) -> Unit, onImport: () -
             singleLine = true,
             placeholder = { Text("筛选名字") },
         )
-        // 「导入」放这里而不是标题栏：它和「筛选」一样是「对当前这一屏做的事」，
-        // 而标题栏那排已经被导航按钮占满了
         Spacer(Modifier.width(8.dp))
-        Button(onClick = onImport) { Text("导入") }
+        // 关掉时**同时清空关键词**：只收框不清词的话，用户关了筛选却还在筛，
+        // 会以为文件少了 —— 这种「看不见的生效条件」最难自查
+        TextButton(onClick = { onFilter(""); onClose() }) { Text("关掉") }
+    }
+}
+
+/**
+ * 路径那一行最右的「更多」菜单。
+ *
+ * 承接原来占一整行的「筛选 + 导入」。收进菜单的理由很简单：
+ * 这两件事偶尔才用一次，而那一行是**每次浏览都在付**的成本。
+ */
+@Composable
+private fun MoreMenu(searching: Boolean, onImport: () -> Unit, onToggleSearch: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        TextButton(
+            onClick = { open = true },
+            contentPadding = PaddingValues(horizontal = 8.dp),
+        ) {
+            Text("⋮")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("导入文件") },
+                onClick = { open = false; onImport() },
+            )
+            DropdownMenuItem(
+                text = { Text(if (searching) "关闭筛选" else "筛选名字") },
+                onClick = { open = false; onToggleSearch() },
+            )
+        }
     }
 }
 
@@ -493,6 +592,7 @@ private fun DirList(
     onDelete: (FsItem) -> Unit,
     onToggleSelected: (String) -> Unit,
     onViewHex: (FsItem) -> Unit,
+    onEnterSelection: (FsItem) -> Unit,
 ) {
     var menuFor by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<FsItem?>(null) }
@@ -561,6 +661,12 @@ private fun DirList(
                     expanded = menuFor == item.path,
                     onDismissRequest = { menuFor = null },
                 ) {
+                    // 多选从这里进。长按本来就是「我要对这个东西做点什么」的起手式，
+                    // 多选是其中一种 —— 别为它常驻一个按钮
+                    DropdownMenuItem(
+                        text = { Text("多选") },
+                        onClick = { menuFor = null; onEnterSelection(item) },
+                    )
                     DropdownMenuItem(
                         text = { Text("属性 / 摘要") },
                         onClick = { menuFor = null; onShowProperties(item) },
@@ -625,21 +731,20 @@ private fun SelectionBar(
     onDelete: () -> Unit,
 ) {
     val plan = state.renamePlan
+    // 只在多选中显示。非多选时整栏都不该占位置 ——
+    // 进多选的入口是**长按文件弹菜单**，而不是一个常驻按钮
+    if (!state.selecting) return
     Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onToggleSelecting) {
-                    Text(if (state.selecting) "退出多选" else "多选")
-                }
-                if (state.selecting) {
-                    TextButton(onClick = onSelectAll) { Text("全选文件") }
-                    TextButton(onClick = onClear) { Text("清空") }
-                    Spacer(Modifier.weight(1f))
-                    Text("${state.selected.size} 项", style = MaterialTheme.typography.labelLarge)
-                }
+                // 这一栏只在多选中才显示（由调用方控制），所以不需要「多选」入口 ——
+                // 进多选靠长按文件弹菜单。常驻一个「多选」按钮是让所有人替少数用法付费
+                TextButton(onClick = onToggleSelecting) { Text("退出多选") }
+                TextButton(onClick = onSelectAll) { Text("全选文件") }
+                TextButton(onClick = onClear) { Text("清空") }
+                Spacer(Modifier.weight(1f))
+                Text("${state.selected.size} 项", style = MaterialTheme.typography.labelLarge)
             }
-
-            if (!state.selecting) return@Column
 
             // 常用动作排在改名规则前面：它们是「拿选中的东西做点什么」，
             // 而改名规则是一套要花时间调的参数，顺序上不该抢在前面。
