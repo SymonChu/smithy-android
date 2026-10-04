@@ -69,6 +69,29 @@ interface ApkProject : AutoCloseable {
     suspend fun setManifestField(field: ManifestField, value: String): PatchRecord
     suspend fun replaceIcon(source: String, densities: List<String>? = null): List<PatchRecord>
 
+    // ── XML 层 ────────────────────────────────────────────────
+    /**
+     * 把包内二进制 XML 解码成可读文本。
+     *
+     * 读不了（条目不存在、或它不是二进制 XML）要明确报错 ——
+     * 普通文本文件请走 [readEntry]，别让人对着空字符串猜。
+     */
+    suspend fun readXml(path: String): String
+
+    /**
+     * 改二进制 XML 里某个元素的属性。
+     *
+     * [elementPath] 是简化路径：`application/activity` 是 application 下第一个 activity，
+     * `activity[1]` 是第二个。属性不存在就新建。
+     *
+     * 与 [setManifestField] 的分工：常用清单字段优先用后者（ARSCLib 对它们有专门处理，
+     * 比如改应用名会连带处理资源引用）；这里改的是**任意** XML 的任意属性。
+     *
+     * 路径从文档的**直接子元素**开始 —— 清单的根是 `manifest`，所以 `application`
+     * 要写成 `manifest/application`；同名节点的第二个用 `activity[1]` 取。
+     */
+    suspend fun patchXml(path: String, elementPath: String, attr: String, value: String): PatchRecord
+
     // ── 打包链路 ──────────────────────────────────────────────
     suspend fun rebuild(incremental: Boolean = true): File        // → unsigned.apk
     suspend fun sign(config: SignConfig): File                    // → signed.apk

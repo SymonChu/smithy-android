@@ -431,6 +431,45 @@ internal class ApkProjectImpl(
 
     override suspend fun replaceIcon(source: String, densities: List<String>?): List<PatchRecord> = todo("replaceIcon")
 
+    // ── XML 层 ────────────────────────────────────────────────
+
+    override suspend fun readXml(path: String): String = withContext(Dispatchers.IO) {
+        XmlBridge.decode(module, path)
+            ?: throw NoSuchElementException(
+                "读不了 $path：条目不存在，或它不是二进制 XML" +
+                    "（普通文本文件用 readEntry 读）",
+            )
+    }
+
+    override suspend fun patchXml(
+        path: String,
+        elementPath: String,
+        attr: String,
+        value: String,
+    ): PatchRecord = withContext(Dispatchers.IO) {
+        if (!XmlBridge.patchAttribute(module, path, elementPath, attr, value)) {
+            throw NoSuchElementException(
+                "在 $path 里找不到元素路径「$elementPath」" +
+                    "（写法是 application/activity，第二个用 activity[1]）",
+            )
+        }
+
+        val files = ArscBridge.writeAndExtract(module, setOf(path), tmpDir("axml"))
+        val after = files[path]
+            ?: throw IllegalStateException("改完了却拿不到新的 $path，这个条目可能不是标准二进制 XML")
+
+        if (isUnchanged(path, after)) {
+            throw IllegalStateException("$path 一个字节都没变：那个属性的值可能本来就等于「$value」")
+        }
+
+        stageEntry(
+            entryPath = path,
+            after = after,
+            kind = PatchRecord.PatchKind.AXML,
+            note = "改 xml 属性：$elementPath 的 $attr = $value",
+        )
+    }
+
     /**
      * 重打包：把工作区覆盖层叠回原包。
      *
