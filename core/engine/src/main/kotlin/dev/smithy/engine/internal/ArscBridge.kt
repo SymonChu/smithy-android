@@ -178,6 +178,17 @@ internal object ArscBridge {
                         m.setIconResourceId(id)
                     }
                 }
+                ManifestField.MIN_SDK -> {
+                    val n = value.toIntOrNull() ?: return false
+                    if (n !in 1..99) return false
+                    // 清单里没有 uses-sdk 时它会新建这个元素（与 setIconResourceId 同理）
+                    m.setMinSdkVersion(n)
+                }
+                ManifestField.TARGET_SDK -> {
+                    val n = value.toIntOrNull() ?: return false
+                    if (n !in 1..99) return false
+                    m.setTargetSdkVersion(n)
+                }
             }
             true
         }.getOrDefault(false)

@@ -45,6 +45,12 @@ data class ZipUiState(
     val saving: Boolean = false,
 )
 
+/** 已知的二进制扩展名 —— 这些条目不当文本编辑。 */
+private val BINARY_EXTS = setOf(
+    "arsc", "dex", "so", "png", "jpg", "jpeg", "webp", "gif", "bmp",
+    "ttf", "otf", "woff", "woff2", "ogg", "mp3", "mp4", "wav", "webm", "9",
+)
+
 data class FilesUiState(
     val dir: String = "",
     val items: List<FsItem> = emptyList(),
@@ -53,6 +59,12 @@ data class FilesUiState(
     val busy: String? = null,
     val message: String? = null,
     val isError: Boolean = false,
+
+    /** 正在编辑的文本条目（null = 没在编辑）。 */
+    val editingPath: String? = null,
+
+    /** 编辑框里的内容（保存前的草稿）。 */
+    val editingText: String = "",
 )
 
 /**
@@ -109,6 +121,65 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onFilter(text: String) = _state.update { it.copy(filter = text) }
+
+    // ── 文本编辑 ──────────────────────────────────────────────
+
+    /**
+     * 打开包内一个文本条目来编辑。
+     *
+     * **只对看起来是文本的条目开放**：apk 里的 xml 是**二进制** XML，当文本编辑只会把它改坏
+     * （而且改完装不上）。所以挡一道并说清原因 —— 让用户打开一堆乱码再自己猜发生了什么，
+     * 比直接拒绝糟得多。
+     */
+    fun openText(path: String) {
+        val editor = zipEditor ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "读取…", message = null, isError = false) }
+            try {
+                val bytes = withContext(Dispatchers.IO) { editor.read(path) }
+                if (!looksTextual(path, bytes)) {
+                    throw IllegalArgumentException(
+                        "$path 看着不是文本：apk 里的 xml 是二进制格式（用「工作台」的资源标签改），" +
+                            "图和 so 更不能当文本编辑",
+                    )
+                }
+                _state.update {
+                    it.copy(busy = null, editingPath = path, editingText = bytes.toString(Charsets.UTF_8))
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /** 保存编辑结果到**待写改动**（还没落盘）。 */
+    fun saveText(text: String) {
+        val editor = zipEditor ?: return
+        val path = _state.value.editingPath ?: return
+        editor.put(path, text.toByteArray(Charsets.UTF_8))
+        _state.update {
+            it.copy(
+                editingPath = null,
+                editingText = "",
+                message = "已记下改动（还要点「保存到…」才真正写进包）",
+                isError = false,
+            )
+        }
+    }
+
+    fun cancelEdit() = _state.update { it.copy(editingPath = null, editingText = "") }
+
+    /**
+     * 粗判一个条目是不是文本。
+     *
+     * 两道：扩展名（已知二进制类型直接否）+ 内容（有 NUL 字节就当二进制）。
+     * 不做严格编码校验 —— 目的是「别让人对着乱码发呆」，不是精确分类。
+     */
+    private fun looksTextual(path: String, bytes: ByteArray): Boolean {
+        val ext = path.substringAfterLast('.', "").lowercase()
+        if (ext in BINARY_EXTS) return false
+        return bytes.none { it == 0.toByte() }
+    }
 
     // ── 打开条目 ────────────────────────────────────────────────
 

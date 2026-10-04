@@ -41,10 +41,14 @@ internal fun OverviewTab(
     editLabel: String,
     editVersionName: String,
     editVersionCode: String,
+    editMinSdk: String,
+    editTargetSdk: String,
     busy: String?,
     onLabelChange: (String) -> Unit,
     onVersionNameChange: (String) -> Unit,
     onVersionCodeChange: (String) -> Unit,
+    onMinSdkChange: (String) -> Unit,
+    onTargetSdkChange: (String) -> Unit,
     onApplyEdits: () -> Unit,
     onExportReport: () -> Unit,
     modifier: Modifier = Modifier,
@@ -65,6 +69,7 @@ internal fun OverviewTab(
             onVersionCode = onVersionCodeChange,
             onApply = onApplyEdits,
         )
+        SdkCard(editMinSdk, editTargetSdk, onMinSdkChange, onTargetSdkChange)
         SignatureCard(meta)
         DexCard(meta.dexStats)
         PermissionsCard(meta.permissions)
@@ -154,6 +159,33 @@ private fun EditRow(
                 KeyboardOptions.Default
             },
             modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * 支持的系统版本。
+ *
+ * 与「改名 / 改版本」分开一张卡片，因为提高 minSdk 的代价完全不同 ——
+ * 那是**放弃老设备**。混在一张卡里容易让人顺手改掉。
+ */
+@Composable
+private fun SdkCard(
+    minSdk: String,
+    targetSdk: String,
+    onMinSdk: (String) -> Unit,
+    onTargetSdk: (String) -> Unit,
+) {
+    SectionCard("支持的系统版本") {
+        EditRow("minSdk", minSdk, onMinSdk, numeric = true)
+        Spacer(Modifier.height(8.dp))
+        EditRow("targetSdk", targetSdk, onTargetSdk, numeric = true)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "提高 minSdk 等于放弃更早的 Android 版本。提到 24 以上就不再需要 v1 签名，装包更快；" +
+                "不过 v1 我们也能自己签（见 打包 标签的签名信息），所以这不是必须的 —— 纯看你想支持到哪一代。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

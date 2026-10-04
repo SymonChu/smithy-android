@@ -76,7 +76,7 @@ internal class ApkProjectImpl(
     val apkFile: File,
     private val module: ApkModule,
     private val zip: ZipFile,
-    override val meta: ApkMeta,
+    meta: ApkMeta,
     /**
      * 内置签名密钥的存放目录。
      *
@@ -90,6 +90,19 @@ internal class ApkProjectImpl(
      */
     private val installChannel: InstallChannel? = null,
 ) : ApkProject {
+
+    /**
+     * 包的基本信息。
+     *
+     * 打开时算一次，但**清单改动之后必须重算**（[recomputeMeta]）：应用名、版本、
+     * minSdk / targetSdk 都来自清单，不重算的话界面会一直显示打开时的快照 ——
+     * 用户改成新名字、点了「应用」，看到的还是旧名字，只会以为操作没生效，然后再点一次。
+     *
+     * 只重算清单相关的部分（`copy` 那几项）：dex 统计与签名信息不会因为改清单而变化，
+     * 没必要连带重新扫一遍目录。
+     */
+    override var meta: ApkMeta = meta
+        private set
 
     override var state: WorkspaceState = WorkspaceState.UNPACKED
         private set
@@ -283,7 +296,31 @@ internal class ApkProjectImpl(
                 note = note,
             )
         }
+        // 改到清单就重算元信息。放在这里而不是每个调用点：所有「改清单」的路径
+        // （改名/版本/minSdk、换图标、以及以后的任何清单写入）都会经过这个方法，
+        // 一处覆盖，不会漏掉新加的功能。
+        if (out.any { it.target == MANIFEST_ENTRY }) recomputeMeta()
         return out
+    }
+
+    /**
+     * 从当前清单状态重算元信息。
+     *
+     * 只重算清单相关的那几项（`copy`）：dex 统计与签名信息不会因为改清单而变化，
+     * 没必要连着把整个包重扫一遍。
+     */
+    private fun recomputeMeta() {
+        val manifest = runCatching { module.getAndroidManifest() }.getOrNull()
+        meta = meta.copy(
+            packageName = manifest?.getPackageName() ?: UNKNOWN,
+            versionName = manifest?.getVersionName() ?: UNKNOWN,
+            versionCode = manifest?.getVersionCode()?.toLong() ?: 0L,
+            minSdk = manifest?.getMinSdkVersion() ?: 0,
+            targetSdk = manifest?.getTargetSdkVersion() ?: 0,
+            appLabel = readAppLabel(module, manifest),
+            permissions = manifest?.getUsesPermissions()?.toList().orEmpty(),
+            components = readComponents(manifest),
+        )
     }
 
     /** 字节是否与原包里那份完全一致 —— 一致就没必要进覆盖层。 */
@@ -832,7 +869,9 @@ internal class ApkProjectImpl(
         val ws = workspaceRef ?: throw NoSuchElementException("当前没有可回退的改动")
         if (!ws.revert(patchId)) throw NoSuchElementException("找不到这条改动记录: $patchId")
         state = if (ws.patchCount == 0) WorkspaceState.UNPACKED else WorkspaceState.DIRTY
-        // 回退同样要让 dex 索引失效 —— 与「改动后失效」是一个道理：
+        // 回退清单改动后 meta 也要回到旧值，否则界面显示的还是改动后的名字
+        recomputeMeta()
+        // 回退同样要让 dex 索引失效 —— 与「改动后失效」一样的道理：
         // 索引缓存着覆盖层快照，回退后覆盖层变了，不失效就会继续读到回退前的内容
         // （症状：用户点了「回退」，再看那个 dex 却是新值 —— 会以为回退没生效）
         dexIndexRef?.close()

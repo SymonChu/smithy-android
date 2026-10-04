@@ -183,11 +183,13 @@ object ManifestSetTool : Tool {
                 required = true,
                 choices = listOf(
                     "APP_LABEL", "PACKAGE_NAME", "VERSION_NAME", "VERSION_CODE", "DEBUGGABLE", "ICON",
+                    "MIN_SDK", "TARGET_SDK",
                 ),
             )
             string(
                 "value",
-                "新值。DEBUGGABLE 传 true/false；ICON 传 @mipmap/xxx（传空串则移除图标声明）",
+                "新值。DEBUGGABLE 传 true/false；ICON 传 @mipmap/xxx（传空串则移除声明）；" +
+                    "MIN_SDK / TARGET_SDK 传 API 级别数字（提高 minSdk 等于放弃更早的系统）",
                 required = true,
             )
         },

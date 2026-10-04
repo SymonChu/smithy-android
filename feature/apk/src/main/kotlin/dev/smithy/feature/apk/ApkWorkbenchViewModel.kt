@@ -86,6 +86,15 @@ data class WorkbenchUiState(
     val editVersionName: String = "",
     val editVersionCode: String = "",
 
+    /**
+     * 支持的系统版本。
+     *
+     * 单独一组而不是并进上面三行：改它的风险不一样 —— 提高 minSdk 等于**放弃老设备**，
+     * 而改名改版本没有这种代价。混在一起容易让人顺手改掉。
+     */
+    val editMinSdk: String = "",
+    val editTargetSdk: String = "",
+
     // ── 打包链路 ──
     val workspaceState: WorkspaceState = WorkspaceState.IDLE,
     val rebuiltPath: String? = null,
@@ -146,6 +155,8 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                     editLabel = meta.appLabel,
                     editVersionName = meta.versionName,
                     editVersionCode = meta.versionCode.toString(),
+                    editMinSdk = meta.minSdk.toString(),
+                    editTargetSdk = meta.targetSdk.toString(),
                 )
             } catch (t: Throwable) {
                 _state.update {
@@ -453,6 +464,10 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onEditVersionCode(value: String) = _state.update { it.copy(editVersionCode = value) }
 
+    fun onEditMinSdk(value: String) = _state.update { it.copy(editMinSdk = value) }
+
+    fun onEditTargetSdk(value: String) = _state.update { it.copy(editTargetSdk = value) }
+
     /**
      * 应用概览里的改名 / 改版本。
      *
@@ -491,6 +506,22 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                     changed += "版本码"
                 }
 
+                val minSdk = s.editMinSdk.trim().toIntOrNull()
+                if (minSdk != null && minSdk != meta.minSdk) {
+                    project.setManifestField(ManifestField.MIN_SDK, minSdk.toString())
+                    // 提高 minSdk 等于放弃老设备，提示里点一下，免得以为没代价
+                    changed += if (minSdk > meta.minSdk) {
+                        "minSdk $minSdk（不再支持更早的系统）"
+                    } else {
+                        "minSdk $minSdk"
+                    }
+                }
+                val targetSdk = s.editTargetSdk.trim().toIntOrNull()
+                if (targetSdk != null && targetSdk != meta.targetSdk) {
+                    project.setManifestField(ManifestField.TARGET_SDK, targetSdk.toString())
+                    changed += "targetSdk $targetSdk"
+                }
+
                 if (changed.isEmpty()) {
                     _state.update { it.copy(busy = null, message = "没有需要改的（内容没变）") }
                     return@launch
@@ -506,6 +537,8 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                         editLabel = fresh.appLabel,
                         editVersionName = fresh.versionName,
                         editVersionCode = fresh.versionCode.toString(),
+                        editMinSdk = fresh.minSdk.toString(),
+                        editTargetSdk = fresh.targetSdk.toString(),
                         message = "已改 ${changed.joinToString("、")}。重打包签名后才生效",
                     )
                 }

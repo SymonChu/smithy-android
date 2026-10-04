@@ -53,8 +53,24 @@ fun FilesScreen(
     onDeleteEntry: (String) -> Unit,
     onUndoEntry: (String) -> Unit,
     onSaveZip: () -> Unit,
+    onOpenText: (String) -> Unit,
+    onSaveText: (String) -> Unit,
+    onCancelEdit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
+    // 把列表留在旁边只会把行宽挤到看不清
+    state.editingPath?.let { path ->
+        TextEditorScreen(
+            path = path,
+            text = state.editingText,
+            onSave = onSaveText,
+            onCancel = onCancelEdit,
+            modifier = modifier,
+        )
+        return
+    }
+
     Column(modifier.fillMaxSize()) {
         val zip = state.zip
         if (zip == null) {
@@ -63,7 +79,7 @@ fun FilesScreen(
             DirList(state, Modifier.weight(1f), onOpenItem)
         } else {
             ZipHeader(zip, state.busy)
-            ZipList(zip, Modifier.weight(1f), onReplaceEntry, onDeleteEntry, onUndoEntry)
+            ZipList(zip, Modifier.weight(1f), onReplaceEntry, onDeleteEntry, onUndoEntry, onOpenText)
             ZipActions(zip, onCloseZip, onSaveZip)
         }
 
@@ -170,11 +186,12 @@ private fun ZipList(
     onReplace: (String) -> Unit,
     onDelete: (String) -> Unit,
     onUndo: (String) -> Unit,
+    onEdit: (String) -> Unit,
 ) {
     LazyColumn(modifier.fillMaxWidth()) {
         items(zip.items, key = { it.path }) { entry ->
             val change = zip.changes[entry.path]
-            ZipRow(entry, change, onReplace, onDelete, onUndo)
+            ZipRow(entry, change, onReplace, onDelete, onUndo, onEdit)
             HorizontalDivider()
         }
     }
@@ -187,6 +204,7 @@ private fun ZipRow(
     onReplace: (String) -> Unit,
     onDelete: (String) -> Unit,
     onUndo: (String) -> Unit,
+    onEdit: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -216,6 +234,9 @@ private fun ZipRow(
         if (expanded) {
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 是不是文本由 VM 读了内容再判断并解释，这里不做扩展名过滤 ——
+                // 像 `META-INF/androidx.core.version` 这种没扩展名但确实是文本的会被误杀
+                OutlinedButton(onClick = { onEdit(entry.path) }) { Text("编辑") }
                 OutlinedButton(onClick = { onReplace(entry.path) }) { Text("替换") }
                 OutlinedButton(onClick = { onDelete(entry.path) }) { Text("删除") }
                 if (change != null) {

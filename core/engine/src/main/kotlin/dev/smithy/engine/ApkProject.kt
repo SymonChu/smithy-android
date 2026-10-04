@@ -193,7 +193,21 @@ data class ResourceEntry(
  * [ICON] 的值形如 `@mipmap/xxx`（也可以给 `mipmap/xxx`）—— 引擎会按名字查出资源 id 再写进去，
  * 因为清单里存的是**引用**而不是名字。给空字符串表示**移除**这个声明。
  */
-enum class ManifestField { APP_LABEL, PACKAGE_NAME, VERSION_NAME, VERSION_CODE, DEBUGGABLE, ICON }
+enum class ManifestField {
+    APP_LABEL, PACKAGE_NAME, VERSION_NAME, VERSION_CODE, DEBUGGABLE, ICON,
+
+    /**
+     * 最低支持的 Android 版本（API 级别）。
+     *
+     * **提高它的代价要在界面上说清楚**：包会声明「只支持更新的系统」，也就是**放弃老设备**。
+     * 常见用法是提到 24 —— 那样就不再需要 v1 签名（v2/v3 更快、防篡改更强）。
+     * 不过 v1 已经能自己签了，所以这不再是「必须提」，纯粹是取舍。
+     */
+    MIN_SDK,
+
+    /** 目标版本（API 级别）。影响系统的兼容行为，一般与 minSdk 一起调。 */
+    TARGET_SDK,
+}
 
 data class SignConfig(
     val keystoreRef: String? = null,   // null = 用内置自动生成的 keystore

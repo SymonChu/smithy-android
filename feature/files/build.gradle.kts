@@ -28,4 +28,8 @@ dependencies {
     implementation(libs.serialization.json)
     // AndroidViewModel / viewModelScope
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    // 代码编辑器（LGPL-2.1，以未修改库形式引用，许可页已声明）。
+    // **只引 editor，不引 language-textmate**：后者要求 API 33 以下开 core library desugaring，
+    // 代价是一个额外的构建约束；而这里要编辑的是配置文件、脚本这类文本，纯文本编辑就够用。
+    implementation(libs.sora.editor)
 }

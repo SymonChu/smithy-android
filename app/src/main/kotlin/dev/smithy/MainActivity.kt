@@ -104,6 +104,9 @@ fun SmithyRoot() {
                     onDeleteEntry = filesVm::deleteEntry,
                     onUndoEntry = filesVm::undoEntry,
                     onSaveZip = { pickTarget.launch("output.zip") },
+                    onOpenText = filesVm::openText,
+                    onSaveText = filesVm::saveText,
+                    onCancelEdit = filesVm::cancelEdit,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen()
