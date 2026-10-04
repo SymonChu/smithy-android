@@ -25,6 +25,20 @@ import dev.smithy.toolkit.tools.EntryListTool
 import dev.smithy.toolkit.tools.EntryReadTool
 import dev.smithy.toolkit.tools.EntryWriteTool
 import dev.smithy.toolkit.tools.JadxDecompileTool
+import dev.smithy.toolkit.tools.ModuleDeleteEntryTool
+import dev.smithy.toolkit.tools.ModuleInspectTool
+import dev.smithy.toolkit.tools.ModuleInstallTool
+import dev.smithy.toolkit.tools.ModuleListInstalledTool
+import dev.smithy.toolkit.tools.ModuleReadTextTool
+import dev.smithy.toolkit.tools.ModuleRemoveTool
+import dev.smithy.toolkit.tools.ModuleRestartZygoteTool
+import dev.smithy.toolkit.tools.ModuleSetEnabledTool
+import dev.smithy.toolkit.tools.ModuleSetPropTool
+import dev.smithy.toolkit.tools.ModuleUninstallTool
+import dev.smithy.toolkit.tools.ModuleWriteTextTool
+import dev.smithy.toolkit.tools.ElfInspectTool
+import dev.smithy.toolkit.tools.ElfPatchStringTool
+import dev.smithy.toolkit.tools.ElfStringsTool
 import dev.smithy.toolkit.tools.ManifestSetTool
 import dev.smithy.toolkit.tools.PatchListTool
 import dev.smithy.toolkit.tools.PatchRevertTool
@@ -220,6 +234,14 @@ fun defaultTools(): List<Tool> = listOf(
     ArscListTool, ArscSetTool, ArscReplaceStringTool, ManifestSetTool, AxmlDecodeTool, AxmlPatchTool,
     // 打包链路
     ApkRebuildTool, ApkSignTool, ApkVerifyTool, ApkInstallTool,
+    // 模块（Magisk / Zygisk）：改包之外的另一种包。按路径操作，不占用 apk 工作区
+    ModuleInspectTool, ModuleReadTextTool, ModuleWriteTextTool, ModuleSetPropTool,
+    ModuleDeleteEntryTool,
+    // 模块的设备操作：只有 Root 一档能做到，通道由 App 层注册
+    ModuleListInstalledTool, ModuleInstallTool, ModuleSetEnabledTool, ModuleRemoveTool,
+    ModuleUninstallTool, ModuleRestartZygoteTool,
+    // so 的字节层：只做等长替换，变长与「被按内容索引的节」一律拒绝
+    ElfInspectTool, ElfStringsTool, ElfPatchStringTool,
 )
 
 fun defaultRegistry(policy: ConfirmPolicy = ConfirmPolicy()): DefaultToolRegistry =
