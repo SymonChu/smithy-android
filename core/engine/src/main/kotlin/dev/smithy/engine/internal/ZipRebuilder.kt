@@ -34,7 +34,17 @@ internal object ZipRebuilder {
     private const val LOCAL_SIG = 0x04034b50L
     private const val CENTRAL_SIG = 0x02014b50L
     private const val EOCD_SIG = 0x06054b50L
-    private const val ALIGNMENT = 4
+    /** 未压缩资源的对齐（`resources.arsc` 是 Android 11+ 的硬要求）。 */
+    private const val DATA_ALIGNMENT = 4L
+
+    /**
+     * 未压缩 `.so` 的页对齐。
+     *
+     * `extractNativeLibs=false` 时安装器直接 mmap 它，不满足就报
+     * `Failed to extract native libraries, res=-2`。取 16KB（而不是 4KB）：
+     * 16KB 对齐天然也满足 4KB，而 Android 15 起支持 16KB 页的设备会要求它。
+     */
+    private const val PAGE_ALIGNMENT = 16384L
     private const val MAX_U16 = 0xFFFF
     private const val MAX_U32 = 0xFFFFFFFFL
 
@@ -121,7 +131,7 @@ internal object ZipRebuilder {
                         val crc = crc32(raw)
                         // 保持原条目的压缩方式：resources.arsc 这类是 STORED，改了也必须是 STORED
                         val payload = if (e.method == METHOD_STORED) raw else deflate(raw)
-                        val extra = alignExtra(e.extra, offset, nameBytes.size, e.method)
+                        val extra = alignExtra(e.extra, offset, nameBytes.size, e.method, e.name)
                         val header = localHeader(
                             e.versionNeeded, 0, e.method, e.time, e.date,
                             crc, payload.size.toLong(), raw.size.toLong(), nameBytes, extra,
@@ -134,7 +144,7 @@ internal object ZipRebuilder {
                         recompressed++
                     } else {
                         val dataStart = localDataOffset(raf, e.localOffset)
-                        val extra = alignExtra(e.extra, offset, nameBytes.size, e.method)
+                        val extra = alignExtra(e.extra, offset, nameBytes.size, e.method, e.name)
                         val header = localHeader(
                             e.versionNeeded, 0, e.method, e.time, e.date,
                             e.crc, e.compressedSize, e.size, nameBytes, extra,
@@ -329,27 +339,50 @@ internal object ZipRebuilder {
     }
 
     /**
-     * STORED 条目要对齐到 4 字节（`resources.arsc` 是 Android 11+ 的硬要求）。
+     * 让未压缩条目的**数据偏移**满足对齐要求。
      *
-     * 填充必须是**合法的 extra 块**，结构为 [id:2][长度:2][数据]，所以最小 4 字节。
-     * 而对齐只关心「总偏移 mod 4」，因此填 (4 + pad) 字节与填 pad 字节等效 ——
-     * 既合法又能对齐，两全。
+     * 两种对齐值，别搞混（都踩过）：
+     * - **未压缩资源**（`resources.arsc` 这类）对齐到 **4 字节** —— Android 11+ 的硬要求
+     * - **未压缩的 `.so`** 对齐到 **16KB 页** —— `extractNativeLibs=false` 时安装器直接
+     *   mmap 它，不对齐就报 `Failed to extract native libraries, res=-2`，
+     *   而这个报错完全看不出是 zip 层的问题（真机反馈过：改名改版本后装不上）
      *
-     * 为什么不用裸字节填充：实测它会让严格的 zip 解析器读不出整包
-     * （ARSCLib 打开新包后资源表直接读不到，应用名退回显示资源 id）。
+     * 填充必须是**合法的 extra 块** —— 结构 `[id:2][长度:2][数据:长度]`，总长 = 4 + 长度。
+     * 要让总偏移补上 `pad` 字节，同时块长合法，于是取
+     * `长度 ≡ pad - 4 (mod 对齐值)`：块长 = 4 + 长度 ≡ pad，对齐成立。
+     *
+     * 不用裸字节填充：实测它会让严格的解析器读不出整包（ARSCLib 打开新包后资源表读不到）。
      * DEFLATED 条目不需要对齐（对齐只对能直接 mmap 的未压缩数据有意义）。
      */
-    private fun alignExtra(origExtra: ByteArray, offset: Long, nameLen: Int, method: Int): ByteArray {
+    private fun alignExtra(
+        origExtra: ByteArray,
+        offset: Long,
+        nameLen: Int,
+        method: Int,
+        name: String,
+    ): ByteArray {
         if (method != METHOD_STORED) return origExtra
+        val alignment = if (isNativeLib(name)) PAGE_ALIGNMENT else DATA_ALIGNMENT
         val base = offset + 30 + nameLen + origExtra.size
-        val pad = ((ALIGNMENT - base % ALIGNMENT) % ALIGNMENT).toInt()
+        val pad = ((alignment - base % alignment) % alignment).toInt()
         if (pad == 0) return origExtra
 
-        val block = ByteArray(4 + pad)
+        // 块长 = 4 + 数据长度，且必须 ≡ pad (mod 对齐值)
+        val dataLen = (((pad - 4) % alignment) + alignment) % alignment
+        val block = ByteArray(4 + dataLen.toInt())
         w16(block, 0, PADDING_EXTRA_ID)
-        w16(block, 2, pad)          // 数据长度 = pad，于是块总长 = 4 + pad
+        w16(block, 2, dataLen.toInt())
         return origExtra + block
     }
+
+    /**
+     * 原生库（lib 目录下的 .so）。
+     *
+     * 注意这里不要写成 `lib/` 加通配符的样式：注释里出现「星号紧邻斜杠」会被当成
+     * 注释标记 —— 前者提前结束注释、后者开启一层嵌套，症状都是莫名其妙的语法错误。
+     */
+    private fun isNativeLib(name: String): Boolean =
+        name.startsWith("lib/") && name.endsWith(".so")
 
     private fun localHeader(
         versionNeeded: Int,

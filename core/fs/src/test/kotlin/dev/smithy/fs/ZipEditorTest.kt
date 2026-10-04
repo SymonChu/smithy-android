@@ -42,8 +42,17 @@ class ZipEditorTest {
             out.write(arscBytes)
             out.closeEntry()
 
-            out.putNextEntry(ZipEntry("lib/arm64-v8a/libx.so"))
-            out.write(ByteArray(4096) { (it % 251).toByte() })
+            // 原生库：真实 apk 里是 STORED，安装器要直接 mmap 它
+            val soBytes = ByteArray(4096) { (it % 251).toByte() }
+            out.putNextEntry(
+                ZipEntry("lib/arm64-v8a/libx.so").apply {
+                    method = ZipEntry.STORED
+                    size = soBytes.size.toLong()
+                    compressedSize = soBytes.size.toLong()
+                    crc = CRC32().apply { update(soBytes) }.value
+                },
+            )
+            out.write(soBytes)
             out.closeEntry()
         }
         return f
@@ -69,7 +78,8 @@ class ZipEditorTest {
                 entries.first { it.path == "resources.arsc" }.stored,
                 "资源表必须是 STORED",
             )
-            assertEquals(false, entries.first { it.path.endsWith(".so") }.stored)
+            // 原生库与资源表一样必须未压缩：安装器要 mmap 它
+            assertEquals(true, entries.first { it.path.endsWith(".so") }.stored)
         }
     }
 
@@ -164,6 +174,36 @@ class ZipEditorTest {
 
         // 产物还得是能正常打开的 zip
         assertTrue(arscBytes.contentEquals(bytesOf(out, "resources.arsc")))
+    }
+
+    /**
+     * 原生库写出来必须**未压缩且页对齐**。
+     *
+     * 与资源表同理但要求更严：`extractNativeLibs=false`（现代包的默认）时安装器直接
+     * mmap 这些 so，不对齐就报 `Failed to extract native libraries, res=-2` ——
+     * 真机上就是这么炸的（改名改版本之后装不上）。
+     */
+    @Test
+    fun `so 写出来未压缩 且按 16KB 页对齐`() {
+        val src = sampleZip()
+        val out = outFile()
+
+        // 前面塞一个长度不整的条目，逼出对齐填充
+        ZipEditor.open(src).use { e ->
+            e.put("assets/pad.txt", ByteArray(5) { 3 })
+            e.writeTo(out)
+        }
+
+        ZipFile(out).use { z ->
+            val entry = z.getEntry("lib/arm64-v8a/libx.so")
+            assertNotNull(entry)
+            assertEquals(ZipEntry.STORED, entry.method, "so 必须未压缩（安装器要 mmap 它）")
+        }
+
+        val off = localDataOffset(out, "lib/arm64-v8a/libx.so")
+        assertNotNull(off, "应该能在产物里找到这个条目")
+        println("── 产物里 so 的数据偏移 = $off（%16384 = ${off % 16384}）")
+        assertEquals(0L, off % 16384, "so 必须 16KB 页对齐，否则装不上")
     }
 
     @Test

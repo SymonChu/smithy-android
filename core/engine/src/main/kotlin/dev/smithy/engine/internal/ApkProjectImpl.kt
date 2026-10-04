@@ -826,6 +826,11 @@ internal class ApkProjectImpl(
         val ws = workspaceRef ?: throw NoSuchElementException("当前没有可回退的改动")
         if (!ws.revert(patchId)) throw NoSuchElementException("找不到这条改动记录: $patchId")
         state = if (ws.patchCount == 0) WorkspaceState.UNPACKED else WorkspaceState.DIRTY
+        // 回退同样要让 dex 索引失效 —— 与「改动后失效」是一个道理：
+        // 索引缓存着覆盖层快照，回退后覆盖层变了，不失效就会继续读到回退前的内容
+        // （症状：用户点了「回退」，再看那个 dex 却是新值 —— 会以为回退没生效）
+        dexIndexRef?.close()
+        dexIndexRef = null
     }
 
     companion object {

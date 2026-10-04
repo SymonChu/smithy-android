@@ -16,6 +16,7 @@ import com.android.tools.smali.dexlib2.rewriter.Rewriters
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
 import java.io.File
+import java.util.zip.ZipFile
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -114,18 +115,36 @@ class DexPatchTest {
 
             // 覆盖层的 size 要与读到的内容一致
             val entry = project.list().first { it.path == dexName }
-            assertEquals(File(dumpTo(project, dexName).absolutePath).length(), entry.size, "list() 的 size 应与覆盖层一致")
+            val dumpedLen = File(dumpTo(project, dexName).absolutePath).length()
+            println("── size 比对：list()=${entry.size} dump=$dumpedLen 条目=$dexName")
+            assertEquals(dumpedLen, entry.size, "list() 的 size 应与覆盖层一致")
 
             // ── 回退 ────────────────────────────────────────────
             // 一次替换可能命中多个 dex，要把它们全退掉才算干净
             patches.forEach { project.revert(it.id) }
+            println("── 回退 ${patches.size} 条后：patchCount=${project.patchCount} state=${project.state}")
             assertEquals(0, project.patchCount, "回退后不应还剩改动")
             assertEquals(WorkspaceState.UNPACKED, project.state, "回退干净后状态应回到 UNPACKED")
 
-            val restored = dumpTo(project, dexName).readBytes().toString(Charsets.UTF_8)
-            assertTrue(restored.contains("工作台"), "回退后旧值应回来")
-            assertFalse(restored.contains("操作台"), "回退后新值应消失")
-            println("── 回退后：含「工作台」=${restored.contains("工作台")}，含「操作台」=${restored.contains("操作台")}")
+            val restored = dumpTo(project, dexName).readBytes()
+            println("── 回退后 dump 出 ${restored.size}B")
+
+            // 回退后应与**原包里该条目逐字节一致**。
+            //
+            // 不能断言「不含新值」：样本包的 classes2.dex 里本来就有一处「操作台」，
+            // 那种断言是写死样本内容的老毛病（这个坑栽过不止一次）。
+            // 逐字节比对才是「回退干净」的准确表达。
+            val originalBytes = File.createTempFile("smithy-orig", ".dex").also { f ->
+                ZipFile(requireSample()).use { z ->
+                    z.getInputStream(z.getEntry(dexName)).use { ins ->
+                        f.outputStream().use { ins.copyTo(it) }
+                    }
+                }
+            }.readBytes()
+            assertTrue(
+                originalBytes.contentEquals(restored),
+                "回退后应与原包逐字节一致（原包 ${originalBytes.size}B，回退后 ${restored.size}B）",
+            )
         } finally {
             project.close(keepArtifacts = false)
         }

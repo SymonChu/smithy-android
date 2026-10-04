@@ -167,7 +167,10 @@ class ZipEditor private constructor(private val source: File) : AutoCloseable {
                 crc = entry.crc
                 // 本地头的 30 字节固定部分**已经包含「extra 长度」那 2 字节**，
                 // 所以无 extra 时的数据偏移就是 +30+名长 —— 这里不能再加 2（踩过：差 2 就不对齐）
-                extra = paddedExtra(counter.written + 30 + entry.name.toByteArray().size)
+                extra = paddedExtra(
+                    counter.written + 30 + entry.name.toByteArray().size,
+                    alignmentFor(entry.name),
+                )
             }
         }
         out.putNextEntry(copy)
@@ -176,9 +179,9 @@ class ZipEditor private constructor(private val source: File) : AutoCloseable {
     }
 
     private fun writeNew(path: String, bytes: ByteArray, out: ZipOutputStream, counter: CountingOutputStream) {
-        // 资源表必须 STORED + 对齐（安装器按内存映射读它，压缩了会被拒绝安装）；
-        // 其余按默认压缩 —— apk 里绝大多数条目本来就是 DEFLATED
-        val needsStored = path == "resources.arsc"
+        // 资源表与原生库都必须**未压缩**：安装器按内存映射直接读它们，压缩了就拒绝安装
+        // （so 的报错是 Failed to extract native libraries，很难往 zip 层联想）
+        val needsStored = path == ARSC_ENTRY || isNativeLib(path)
         val entry = ZipEntry(path)
         if (needsStored) {
             entry.method = ZipEntry.STORED
@@ -186,8 +189,10 @@ class ZipEditor private constructor(private val source: File) : AutoCloseable {
             entry.compressedSize = bytes.size.toLong()
             val crc = java.util.zip.CRC32().apply { update(bytes) }
             entry.crc = crc.value
-            // 同 copyRaw：本地头的 30 字节里已含 extra 长度字段，不要再 +2
-            entry.extra = paddedExtra(counter.written + 30 + path.toByteArray().size)
+            entry.extra = paddedExtra(
+                counter.written + 30 + path.toByteArray().size,
+                alignmentFor(path),
+            )
         }
         entry.time = System.currentTimeMillis()
         out.putNextEntry(entry)
@@ -196,22 +201,22 @@ class ZipEditor private constructor(private val source: File) : AutoCloseable {
     }
 
     /**
-     * 造一段「合法的对齐填充」。
+     * 造一段**合法的对齐填充**。
      *
-     * 不能随便塞几个字节当 padding：zip 的 extra 区是「4 字节头 + 数据」的连续记录，
-     * 头里带字段 id 与长度。长度与实际不符时解压器会直接报错，所以这里按规范写一条
-     * 私有字段（id 0x7075）来占位。
+     * extra 块结构是 `[id:2][长度:2][数据:长度]`，总长 = 4 + 长度。要让总偏移补上 `pad`
+     * 字节、同时块长合法，取 `长度 ≡ pad - 4 (mod 对齐值)`。
      *
-     * [offsetIfNoPadding] 是「不加填充时数据会落在哪个偏移」，据此算出还需要几个字节。
+     * **两种对齐值都要支持**：未压缩资源 4 字节；未压缩的 so 要 **16KB 页对齐** ——
+     * `extractNativeLibs=false` 时安装器直接 mmap 它，不满足就报
+     * `Failed to extract native libraries`，而那个报错完全看不出是 zip 层的问题。
+     *
+     * 不用裸字节填充：那会让严格的解析器读不出整包（ARSCLib 打开后资源表读不到）。
      */
-    private fun paddedExtra(offsetIfNoPadding: Long): ByteArray? {
-        val need = ((4 - (offsetIfNoPadding % 4)) % 4).toInt()
-        if (need == 0) return null
-        // 一条 extra 记录至少 4 字节（id 2 + size 2），所以补 need + 4 字节：
-        // 既是 4 的倍数（对齐成立），又够放一条合法记录
-        val pad = need + 4
-        val dataLen = pad - 4
-        return ByteArray(pad).also { buf ->
+    private fun paddedExtra(offsetIfNoPadding: Long, alignment: Long): ByteArray? {
+        val pad = ((alignment - offsetIfNoPadding % alignment) % alignment).toInt()
+        if (pad == 0) return null
+        val dataLen = (((pad - 4) % alignment) + alignment) % alignment
+        return ByteArray(4 + dataLen.toInt()).also { buf ->
             // 私有字段 id 0xCAFE，size 填**真实数据长度** ——
             // 填 0 的话剩下的字节会被当成下一条记录的头，解压器直接报错
             buf[0] = 0xCA.toByte()
@@ -220,6 +225,14 @@ class ZipEditor private constructor(private val source: File) : AutoCloseable {
             buf[3] = ((dataLen shr 8) and 0xFF).toByte()
         }
     }
+
+    /** 对齐值：原生库要页对齐，其余未压缩条目 4 字节。 */
+    private fun alignmentFor(name: String): Long =
+        if (isNativeLib(name)) PAGE_ALIGNMENT else DATA_ALIGNMENT
+
+    /** 原生库（lib 目录下的 so）。安装器要 mmap 它，所以必须未压缩且页对齐。 */
+    private fun isNativeLib(name: String): Boolean =
+        name.startsWith("lib/") && name.endsWith(".so")
 
     override fun close() {
         runCatching { zip.close() }
@@ -232,6 +245,21 @@ class ZipEditor private constructor(private val source: File) : AutoCloseable {
         }
     }
 }
+
+/** 资源表条目名。安装器按内存映射读它，必须未压缩且 4 字节对齐。 */
+private const val ARSC_ENTRY = "resources.arsc"
+
+/** 未压缩资源的对齐（Android 11+ 的硬要求）。 */
+private const val DATA_ALIGNMENT = 4L
+
+/**
+ * 未压缩原生库的页对齐。
+ *
+ * `extractNativeLibs=false`（现代包的默认）时安装器直接 mmap 这些 so，不满足就报
+ * `Failed to extract native libraries, res=-2`。取 16KB 而不是 4KB：16KB 天然也满足 4KB，
+ * 而支持 16KB 页的设备会要求它。
+ */
+private const val PAGE_ALIGNMENT = 16384L
 
 /** 数写出去多少字节。对齐要靠它算偏移，而 `ZipOutputStream` 不暴露这个。 */
 private class CountingOutputStream(out: OutputStream) : FilterOutputStream(out) {

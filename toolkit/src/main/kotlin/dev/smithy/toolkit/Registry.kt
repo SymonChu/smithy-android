@@ -76,8 +76,21 @@ class DefaultToolRegistry(
         }
     }
 
-    /** 只给名字与一行说明，用于「让模型知道自己有哪些工具」的紧凑提示。 */
-    fun catalog(): String = tools.joinToString("\n") { "${it.spec.name}  ${it.spec.description.lineSequence().first()}" }
+    /**
+     * 工具目录（塞进提示词，让模型知道自己有哪些工具）。
+     *
+     * 每行只取**第一句**，不是第一行：description 里常常是拼接出来的一整段长文本，
+     * 取「行」等于取全文，目录一下膨胀到几千字符、白占上下文 ——
+     * 而且这类膨胀是悄无声息的（没人会盯着系统提示数长度）。
+     */
+    fun catalog(): String = tools.joinToString("\n") { tool ->
+        val summary = tool.spec.description
+            .lineSequence().first()
+            .substringBefore('。')
+            .substringBefore('；')
+            .take(120)
+        "${tool.spec.name}  $summary"
+    }
 
     suspend fun invoke(name: String, ctx: ToolContext, args: JsonObject): ToolResult {
         val tool = byName[name] ?: return Results.fail(
