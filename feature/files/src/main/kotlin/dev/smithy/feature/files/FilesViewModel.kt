@@ -141,7 +141,19 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     private val rootDir: File = app.getExternalFilesDir(null) ?: app.filesDir
 
     init {
+        // 先落在能立刻用的地方，然后**后台**问一次 root —— 没有 root 的人不该看到
+        // 一个卡住的界面，有 root 的人也不该先看到一堆进不去的目录。
+        //
+        // 有 root 就落到 `/sdcard`：那是用户真正常去的地方（下载、聊天记录、
+        // 别人发来的包）。而不是「先给你个受限的，等你撞墙了再自己找开关切」。
         openDir(rootDir.absolutePath)
+        viewModelScope.launch {
+            val granted = withContext(Dispatchers.IO) { RootFs.isGranted() }
+            if (granted) {
+                _state.update { it.copy(rootMode = true) }
+                openDir("/sdcard")
+            }
+        }
     }
 
     // ── 复制 / 移动 / 删除 ─────────────────────────────────────
@@ -344,6 +356,19 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         openDir(parent.absolutePath)
+    }
+
+    /**
+     * 跳到任意路径（面包屑、快捷入口用）。
+     *
+     * 越界检查只在**非 root** 模式下做 —— 有 root 时 `/` 就是边界，没有更上面的东西。
+     */
+    fun jumpTo(path: String) {
+        if (!_state.value.rootMode && !path.startsWith(rootDir.absolutePath)) {
+            _state.update { it.copy(message = "这个位置需要 root（顶部可切换）", isError = true) }
+            return
+        }
+        openDir(path)
     }
 
     fun onFilter(text: String) = _state.update { it.copy(filter = text) }
@@ -792,9 +817,35 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 相对起始目录的路径，界面显示用（绝对路径太长）。 */
-    fun relative(path: String): String =
-        path.removePrefix(rootDir.absolutePath).trimStart('/').ifEmpty { "/" }
+    /**
+     * 界面显示的路径 —— **就是完整路径**。
+     *
+     * 之前这里把应用私有目录的前缀藏掉（「绝对路径太长」），那是把它当配套功能的思路。
+     * 文件管理器里位置必须是绝对的：`/data/adb/modules` 和沙盒里一个同名目录是
+     * 完全两回事，只显示后半截会让人以为在改系统文件。
+     */
+    fun relative(path: String): String = path.ifEmpty { "/" }
+
+    /**
+     * 路径的各级，从根开始（面包屑）。
+     *
+     * 每一级都带自己的完整路径，这样点某一级就能跳过去 —— 比「返回上一级」按很多次
+     * 快得多，也是文件管理器该有的手感。
+     */
+    fun breadcrumbs(path: String): List<Pair<String, String>> {
+        val parts = path.trim('/').split('/').filter { it.isNotEmpty() }
+        var acc = ""
+        return parts.map { p -> acc = "$acc/$p"; acc to p }
+    }
+
+    /** 常用的几个位置，做成快捷入口。 */
+    fun shortcuts(): List<Pair<String, String>> = listOf(
+        "内部存储" to "/sdcard",
+        "下载" to "/sdcard/Download",
+        "根目录" to "/",
+        "模块目录" to "/data/adb/modules",
+        "应用数据" to "/data/data",
+    )
 }
 
 fun humanSize(bytes: Long): String = when {

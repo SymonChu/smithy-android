@@ -170,6 +170,9 @@ fun SmithyRoot(
                     onDeleteSelected = filesVm::deleteSelected,
                     onPaste = filesVm::paste,
                     onClearClipboard = filesVm::clearClipboard,
+                    breadcrumbs = filesVm::breadcrumbs,
+                    shortcuts = filesVm::shortcuts,
+                    onJumpTo = filesVm::jumpTo,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(

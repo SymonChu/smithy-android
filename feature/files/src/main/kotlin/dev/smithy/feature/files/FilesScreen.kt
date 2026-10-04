@@ -1,6 +1,9 @@
 package dev.smithy.feature.files
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
@@ -87,6 +90,9 @@ fun FilesScreen(
     onDeleteSelected: () -> Unit,
     onPaste: () -> Unit,
     onClearClipboard: () -> Unit,
+    breadcrumbs: (String) -> List<Pair<String, String>>,
+    shortcuts: () -> List<Pair<String, String>>,
+    onJumpTo: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -116,8 +122,9 @@ fun FilesScreen(
             // 并排比上下叠着更贴近它们的关系，而且互不遮挡 —— 改包时能一直看着文件列表
             Row(Modifier.weight(1f)) {
                 Column(Modifier.weight(1f)) {
-                    DirHeader(state.dir, relative, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
+                    DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
                     FilterRow(state.filter, onFilter, onImport)
+                    ShortcutBar(shortcuts(), onJumpTo)
                     SelectionBar(
                         state = state,
                         onToggleSelecting = onToggleSelecting,
@@ -165,8 +172,9 @@ fun FilesScreen(
                 }
             }
         } else if (zip == null) {
-            DirHeader(state.dir, relative, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
+            DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
             FilterRow(state.filter, onFilter, onImport)
+            ShortcutBar(shortcuts(), onJumpTo)
             SelectionBar(
                 state = state,
                 onToggleSelecting = onToggleSelecting,
@@ -202,8 +210,8 @@ private const val WIDE_DP = 600
 
 @Composable
 private fun DirHeader(
-    dir: String,
-    relative: (String) -> String,
+    crumbs: List<Pair<String, String>>,
+    onJump: (String) -> Unit,
     onGoUp: () -> Unit,
     rootMode: Boolean,
     onToggleRoot: () -> Unit,
@@ -218,13 +226,31 @@ private fun DirHeader(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-            TextButton(onClick = onGoUp) { Text("↑ 上级") }
-            Text(
-                relative(dir),
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.weight(1f),
-            )
+            TextButton(onClick = onGoUp) { Text("↑") }
+            // 面包屑：每一级都能点。比「返回上一级」按很多次快得多，也是文件管理器该有的手感。
+            // 长路径横向滚动 —— 宁可滚，也不要把中间截掉（截掉的往往正是要确认的那一级）
+            Row(
+                Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                crumbs.forEachIndexed { i, (full, name) ->
+                    if (i > 0) {
+                        Text("/", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(
+                        onClick = { onJump(full) },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            name,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            // 当前这一级加粗：长路径滚起来时，得能一眼认出自己在哪
+                            fontWeight = if (i == crumbs.lastIndex) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
+                }
+            }
             // root 开关放在路径右边：当前在哪种模式必须**一眼看到** ——
             // 两种模式下同一个路径名含义不同（`/data` 在普通模式指应用自己的，
             // 在 root 模式指系统那个），看不出来就会改错东西
@@ -248,6 +274,29 @@ private fun DirHeader(
                     Spacer(Modifier.width(6.dp))
                     TextButton(onClick = onClearClipboard) { Text("取消") }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 快捷入口。
+ *
+ * 文件管理器最常用的几个位置各给一个按钮 —— 每次从 `/` 一层层点下去，
+ * 在最常去的那三四个地方是纯粹的浪费时间。
+ */
+@Composable
+private fun ShortcutBar(items: List<Pair<String, String>>, onJump: (String) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items.forEach { (label, path) ->
+            OutlinedButton(
+                onClick = { onJump(path) },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+            ) {
+                Text(label, style = MaterialTheme.typography.labelSmall)
             }
         }
     }
