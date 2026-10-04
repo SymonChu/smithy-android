@@ -107,6 +107,10 @@ fun SmithyRoot() {
                     onOpenText = filesVm::openText,
                     onSaveText = filesVm::saveText,
                     onCancelEdit = filesVm::cancelEdit,
+                    onShowProperties = filesVm::showProperties,
+                    onRename = filesVm::rename,
+                    onDelete = filesVm::delete,
+                    onDismissProperties = filesVm::dismissProperties,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen()

@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.smithy.fs.ZipEditor
 import dev.smithy.fs.ZipEntryInfo
+import dev.smithy.fs.Hashing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -65,6 +66,24 @@ data class FilesUiState(
 
     /** 编辑框里的内容（保存前的草稿）。 */
     val editingText: String = "",
+
+    /** 属性面板的数据（null = 没在显示）。 */
+    val properties: Properties? = null,
+)
+
+/**
+ * 文件属性面板的数据。
+ *
+ * 摘要可能没有（目录就没有），所以单独用 [note] 说明原因，而不是显示三个空字符串 ——
+ * 空白会让人以为「算出来就是空的」。
+ */
+data class Properties(
+    val name: String,
+    val path: String,
+    val size: Long,
+    val modified: Long,
+    val digests: Hashing.Digests?,
+    val note: String? = null,
 )
 
 /**
@@ -121,6 +140,75 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onFilter(text: String) = _state.update { it.copy(filter = text) }
+
+    // ── 属性 / 摘要 / 改名 / 删除 ───────────────────────────────
+
+    fun showProperties(item: FsItem) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "算摘要…", message = null, isError = false) }
+            try {
+                val props = withContext(Dispatchers.IO) {
+                    if (item.dir) {
+                        Properties(item.name, item.path, 0, item.modified, null, "目录没有摘要")
+                    } else {
+                        val d = Hashing.of(File(item.path))
+                        Properties(item.name, item.path, d.size, item.modified, d)
+                    }
+                }
+                _state.update { it.copy(busy = null, properties = props) }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    fun dismissProperties() = _state.update { it.copy(properties = null) }
+
+    /**
+     * 给文件改名。
+     *
+     * 先挡「同名已存在」再动手：`renameTo` 在不同文件系统上行为不一致（有的覆盖、
+     * 有的失败），让它自己决定会得到「有时默默覆盖了另一个文件」。
+     */
+    fun rename(item: FsItem, newName: String) {
+        val clean = newName.trim()
+        if (clean.isEmpty() || clean.contains('/')) {
+            _state.update { it.copy(message = "名字不能为空，也不能带斜杠", isError = true) }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "改名…", message = null, isError = false) }
+            try {
+                withContext(Dispatchers.IO) {
+                    val source = File(item.path)
+                    val target = File(source.parentFile, clean)
+                    if (target.exists()) throw IllegalArgumentException("$clean 已经存在")
+                    if (!source.renameTo(target)) {
+                        throw IllegalStateException("改名失败（可能没权限，或跨了存储设备）")
+                    }
+                }
+                _state.update { it.copy(busy = null, message = "已改名为 $clean", isError = false) }
+                openDir(_state.value.dir)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /** 删除。界面上必须先确认 —— 这里是真的删。 */
+    fun delete(item: FsItem) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "删除…", message = null, isError = false) }
+            try {
+                val ok = withContext(Dispatchers.IO) { File(item.path).deleteRecursively() }
+                if (!ok) throw IllegalStateException("删除失败（可能没有权限）")
+                _state.update { it.copy(busy = null, message = "已删除 ${item.name}", isError = false) }
+                openDir(_state.value.dir)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
 
     // ── 文本编辑 ──────────────────────────────────────────────
 

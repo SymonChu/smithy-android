@@ -1,7 +1,10 @@
 package dev.smithy.feature.files
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +16,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import dev.smithy.fs.humanTime
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -56,6 +64,10 @@ fun FilesScreen(
     onOpenText: (String) -> Unit,
     onSaveText: (String) -> Unit,
     onCancelEdit: () -> Unit,
+    onShowProperties: (FsItem) -> Unit,
+    onRename: (FsItem, String) -> Unit,
+    onDelete: (FsItem) -> Unit,
+    onDismissProperties: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -71,12 +83,21 @@ fun FilesScreen(
         return
     }
 
+    state.properties?.let { props -> PropertiesCard(props, onDismissProperties) }
+
     Column(modifier.fillMaxSize()) {
         val zip = state.zip
         if (zip == null) {
             DirHeader(state.dir, relative, onGoUp)
             FilterRow(state.filter, onFilter)
-            DirList(state, Modifier.weight(1f), onOpenItem)
+            DirList(
+                state = state,
+                modifier = Modifier.weight(1f),
+                onOpenItem = onOpenItem,
+                onShowProperties = onShowProperties,
+                onRename = onRename,
+                onDelete = onDelete,
+            )
         } else {
             ZipHeader(zip, state.busy)
             ZipList(zip, Modifier.weight(1f), onReplaceEntry, onDeleteEntry, onUndoEntry, onOpenText)
@@ -116,8 +137,19 @@ private fun FilterRow(filter: String, onFilter: (String) -> Unit) {
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DirList(state: FilesUiState, modifier: Modifier = Modifier, onOpenItem: (FsItem) -> Unit) {
+private fun DirList(
+    state: FilesUiState,
+    modifier: Modifier = Modifier,
+    onOpenItem: (FsItem) -> Unit,
+    onShowProperties: (FsItem) -> Unit,
+    onRename: (FsItem, String) -> Unit,
+    onDelete: (FsItem) -> Unit,
+) {
+    var menuFor by remember { mutableStateOf<String?>(null) }
+    var renaming by remember { mutableStateOf<FsItem?>(null) }
+    var deleting by remember { mutableStateOf<FsItem?>(null) }
     val filtered = state.items.filter {
         state.filter.isBlank() || it.name.contains(state.filter, ignoreCase = true)
     }
@@ -133,28 +165,165 @@ private fun DirList(state: FilesUiState, modifier: Modifier = Modifier, onOpenIt
     }
     LazyColumn(modifier.fillMaxWidth()) {
         items(filtered, key = { it.path }) { item ->
-            Row(
-                Modifier.fillMaxWidth()
-                    .clickable { onOpenItem(item) }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        (if (item.dir) "📁 " else "📄 ") + item.name,
-                        style = MaterialTheme.typography.bodyMedium,
+            Box {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .combinedClickable(
+                            onClick = { onOpenItem(item) },
+                            onLongClick = { menuFor = item.path },
+                        )
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            (if (item.dir) "📁 " else "📄 ") + item.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            if (item.dir) "目录" else humanSize(item.size) +
+                                if (item.maybeZip) "  ·  可展开" else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                DropdownMenu(
+                    expanded = menuFor == item.path,
+                    onDismissRequest = { menuFor = null },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("属性 / 摘要") },
+                        onClick = { menuFor = null; onShowProperties(item) },
                     )
-                    Text(
-                        if (item.dir) "目录" else humanSize(item.size) +
-                            if (item.maybeZip) "  ·  可展开" else "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    DropdownMenuItem(
+                        text = { Text("改名") },
+                        onClick = { menuFor = null; renaming = item },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("删除") },
+                        onClick = { menuFor = null; deleting = item },
                     )
                 }
             }
             HorizontalDivider()
         }
     }
+
+    renaming?.let { target ->
+        TextInputDialog(
+            title = "改名",
+            initial = target.name,
+            onConfirm = { renaming = null; onRename(target, it) },
+            onDismiss = { renaming = null },
+        )
+    }
+    deleting?.let { target ->
+        ConfirmDialog(
+            title = "删除 ${target.name}？",
+            body = if (target.dir) "目录连同里面的一切都会删掉，不能撤销。" else "不能撤销。",
+            confirm = "删除",
+            destructive = true,
+            onConfirm = { deleting = null; onDelete(target) },
+            onDismiss = { deleting = null },
+        )
+    }
+}
+
+/**
+ * 属性 / 摘要。
+ *
+ * 不用对话框装它：摘要要能**逐行选中复制**（对比包的 MD5 正是主要用途），
+ * 而 SHA-256 有 64 个字符，挤在对话框的窄宽度里会折行，抄起来更容易错。
+ */
+@Composable
+private fun PropertiesCard(props: Properties, onDismiss: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+        Column(
+            Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("属性", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+            PropLine("名字", props.name)
+            PropLine("路径", props.path)
+            PropLine("大小", humanSize(props.size))
+            PropLine("修改时间", humanTime(props.modified))
+            props.note?.let { PropLine("摘要", it) }
+            props.digests?.let { d ->
+                PropLine("MD5", d.md5)
+                PropLine("SHA-1", d.sha1)
+                PropLine("SHA-256", d.sha256)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PropLine(label: String, value: String) {
+    Column {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+        SelectionContainer {
+            Text(value, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+        }
+    }
+}
+
+/** 单输入框对话框（改名用）。 */
+@Composable
+private fun TextInputDialog(
+    title: String,
+    initial: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true)
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(text) }) { Text("确定") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+/**
+ * 确认对话框。
+ *
+ * 破坏性操作的按钮**写清动作**（「删除」）而不是「确定」——
+ * 「确定」是那种点完之后想不起来自己确认了什么的东西。
+ */
+@Composable
+private fun ConfirmDialog(
+    title: String,
+    body: String,
+    confirm: String,
+    destructive: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(body) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    confirm,
+                    color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
+                )
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
