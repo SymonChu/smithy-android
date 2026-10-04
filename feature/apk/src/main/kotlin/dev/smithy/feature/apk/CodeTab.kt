@@ -201,7 +201,7 @@ private fun CodeBlock(code: String, modifier: Modifier = Modifier) {
     val lines = remember(code) { code.lines() }
     Box(
         modifier.fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.35f))
             .horizontalScroll(rememberScrollState()),
     ) {
         LazyColumn(Modifier.fillMaxSize()) {

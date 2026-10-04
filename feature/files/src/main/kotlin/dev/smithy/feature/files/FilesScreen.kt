@@ -22,8 +22,6 @@ import androidx.compose.foundation.lazy.items
 import dev.smithy.fs.humanTime
 import dev.smithy.fs.RenameRules
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
 import dev.smithy.design.SmithyMono
 import dev.smithy.design.SmithySpacing
 import androidx.compose.material3.ButtonDefaults
@@ -113,11 +111,6 @@ fun FilesScreen(
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
     // 放进 VM 会让「取消」也要绕一圈去清
     var newTarget by remember { mutableStateOf<String?>(null) }
-
-    // 「更多」底部条与搜索框的开关。都是**按需出现**的 chrome ——
-    // 常驻一行去服务一个低频动作，是每次浏览都在付的成本
-    var sheet by remember { mutableStateOf(false) }
-    var searching by remember { mutableStateOf(false) }
     // 正在改权限的那个路径（null = 没在改）
     var chmodTarget by remember { mutableStateOf<String?>(null) }
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -149,18 +142,6 @@ fun FilesScreen(
 
     state.properties?.let { props ->
         PropertiesCard(props, onDismissProperties, onChmod = { chmodTarget = props.path })
-    }
-
-    if (sheet) {
-        ActionSheet(
-            rootMode = state.rootMode,
-            onToggleRoot = onToggleRoot,
-            onImport = onImport,
-            onNewFolder = { newTarget = "新建文件夹" },
-            onNewFile = { newTarget = "新建文件" },
-            onSelecting = onToggleSelecting,
-            onDismiss = { sheet = false },
-        )
     }
 
     // 改权限。预填当前值 —— 常见操作是在它基础上改一位（比如 644 → 755），
@@ -203,31 +184,18 @@ fun FilesScreen(
             // 并排比上下叠着更贴近它们的关系，而且互不遮挡 —— 改包时能一直看着文件列表
             Row(Modifier.weight(1f)) {
                 Column(Modifier.weight(1f)) {
-                    DirHeader(
-                        crumbs = breadcrumbs(state.dir),
-                        onJump = onJumpTo,
-                        onGoUp = onGoUp,
-                        rootMode = state.rootMode,
-                        onOpenSearch = { searching = true },
-                        onOpenMore = { sheet = true },
-                        clipboard = state.clipboard,
-                        onPaste = onPaste,
-                        onClearClipboard = onClearClipboard,
-                    )
-                    if (searching) QuickSearch(state.filter, onFilter) { searching = false }
-                    QuickRow(
-                        shortcuts = shortcuts(),
-                        currentDir = state.dir,
-                        onJump = onJumpTo,
-                        sortBy = state.sortBy,
-                        onSort = onSort,
-                        showHidden = state.showHidden,
-                        onToggleHidden = onToggleHidden,
-                    )
+                    DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
                     val acc = state.storageAccess
                     if (!state.rootMode && acc != null && acc != StorageAccess.State.Granted) {
                         StorageAccessBar(acc, onRequestAccess)
                     }
+                    FilterRow(state.filter, onFilter, onImport)
+                    ShortcutBar(shortcuts(), onJumpTo)
+                    DirToolbar(
+                        state.sortBy, state.showHidden, onSort, onToggleHidden,
+                        onNewFolder = { newTarget = "新建文件夹" },
+                        onNewFile = { newTarget = "新建文件" },
+                    )
                     SelectionBar(
                         state = state,
                         onToggleSelecting = onToggleSelecting,
@@ -276,31 +244,18 @@ fun FilesScreen(
                 }
             }
         } else if (zip == null) {
-            DirHeader(
-                crumbs = breadcrumbs(state.dir),
-                onJump = onJumpTo,
-                onGoUp = onGoUp,
-                rootMode = state.rootMode,
-                onOpenSearch = { searching = true },
-                onOpenMore = { sheet = true },
-                clipboard = state.clipboard,
-                onPaste = onPaste,
-                onClearClipboard = onClearClipboard,
-            )
-            if (searching) QuickSearch(state.filter, onFilter) { searching = false }
-            QuickRow(
-                shortcuts = shortcuts(),
-                currentDir = state.dir,
-                onJump = onJumpTo,
-                sortBy = state.sortBy,
-                onSort = onSort,
-                showHidden = state.showHidden,
-                onToggleHidden = onToggleHidden,
-            )
+            DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
             val acc = state.storageAccess
             if (!state.rootMode && acc != null && acc != StorageAccess.State.Granted) {
                 StorageAccessBar(acc, onRequestAccess)
             }
+            FilterRow(state.filter, onFilter, onImport)
+            ShortcutBar(shortcuts(), onJumpTo)
+            DirToolbar(
+                state.sortBy, state.showHidden, onSort, onToggleHidden,
+                onNewFolder = { newTarget = "新建文件夹" },
+                onNewFile = { newTarget = "新建文件" },
+            )
             SelectionBar(
                 state = state,
                 onToggleSelecting = onToggleSelecting,
@@ -341,71 +296,55 @@ private fun DirHeader(
     onJump: (String) -> Unit,
     onGoUp: () -> Unit,
     rootMode: Boolean,
-    onOpenSearch: () -> Unit,
-    onOpenMore: () -> Unit,
+    onToggleRoot: () -> Unit,
     clipboard: Clipboard?,
     onPaste: () -> Unit,
     onClearClipboard: () -> Unit,
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        // Column：Surface 只能有一个子元素，而这里要放两行（路径行 + 粘贴提示行）
         Column {
             Row(
-                Modifier.fillMaxWidth()
-                    .padding(start = SmithySpacing.gutter, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onGoUp) { Text("↑") }
-                // 面包屑：每一级都能点。比「返回上一级」按很多次快得多，
-                // 也是文件管理器该有的手感。长路径横向滚动 —— 宁可滚，
-                // 也不要把中间截掉（截掉的往往正是要确认的那一级）
-                Row(
-                    Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    crumbs.forEachIndexed { i, (full, name) ->
-                        if (i > 0) {
-                            Text(
-                                "/",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.outline,
-                            )
-                        }
+            TextButton(onClick = onGoUp) { Text("↑") }
+            // 面包屑：每一级都能点。比「返回上一级」按很多次快得多，也是文件管理器该有的手感。
+            // 长路径横向滚动 —— 宁可滚，也不要把中间截掉（截掉的往往正是要确认的那一级）
+            Row(
+                Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                crumbs.forEachIndexed { i, (full, name) ->
+                    if (i > 0) {
+                        Text("/", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(
+                        onClick = { onJump(full) },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    ) {
                         Text(
                             name,
-                            modifier = Modifier.clickable { onJump(full) }.padding(horizontal = 2.dp),
                             style = MaterialTheme.typography.bodySmall,
-                            fontFamily = SmithyMono,
-                            color = if (i == crumbs.lastIndex) {
-                                MaterialTheme.colorScheme.onSurface
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            // 当前这一级加粗：长路径滚起来时得能一眼认出自己在哪
+                            fontFamily = FontFamily.Monospace,
+                            // 当前这一级加粗：长路径滚起来时，得能一眼认出自己在哪
                             fontWeight = if (i == crumbs.lastIndex) FontWeight.Bold else FontWeight.Normal,
                         )
                     }
-                    // root 状态只用一个小圆点，不再是文字按钮：
-                    // 它是**状态**（我现在能不能进系统目录），该一直可见；
-                    // 切换是**动作**，低频，移进了「更多」菜单。
-                    // 两种模式下同名路径含义不同（`/data` 在普通模式指应用自己的），
-                    // 所以这个点必须一直在
-                    if (rootMode) {
-                        Spacer(Modifier.width(6.dp))
-                        Text("●", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                    }
                 }
-                TextButton(onClick = onOpenSearch, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                    Text("⌕")
-                }
-                TextButton(onClick = onOpenMore, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                    Text("☰")
-                }
+            }
+            // root 开关放在路径右边：当前在哪种模式必须**一眼看到** ——
+            // 两种模式下同一个路径名含义不同（`/data` 在普通模式指应用自己的，
+            // 在 root 模式指系统那个），看不出来就会改错东西
+            TextButton(onClick = onToggleRoot) {
+                Text(if (rootMode) "root ●" else "普通")
+            }
             }
             // 粘贴板有东西时，在路径下方单占一行：它是「下一步动作」，位置要显眼 ——
             // 用户刚点了复制/剪切，下一步就是找地方贴，这时不该让他去找按钮
             clipboard?.let { clip ->
                 Row(
-                    Modifier.fillMaxWidth().padding(start = SmithySpacing.gutter, end = SmithySpacing.gutter, bottom = 8.dp),
+                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -423,74 +362,51 @@ private fun DirHeader(
 }
 
 /**
- * 快捷入口 + 列表工具，合并成**一条可横滑的行**。
+ * 列表工具：排序、隐藏文件、新建。
  *
- * 之前这是两行（快捷入口一行、排序/隐藏/新建一行）。它们都是「对当前这一屏的操作」，
- * 分开占两行只有一个后果：列表更短 —— 而手机上纵向空间是这个 App 最贵的东西。
- * 新建 / 导入这类低频动作移进了「更多」菜单。
+ * 和快捷入口分开成一行：那行是「去哪儿」，这行是「这一屏怎么显示、能加什么」。
+ * 混在一起会让两件事互相抢位置，而两者都常用。
  */
 @Composable
-private fun QuickRow(
-    shortcuts: List<Pair<String, String>>,
-    currentDir: String,
-    onJump: (String) -> Unit,
+private fun DirToolbar(
     sortBy: SortBy,
-    onSort: (SortBy) -> Unit,
     showHidden: Boolean,
+    onSort: (SortBy) -> Unit,
     onToggleHidden: () -> Unit,
+    onNewFolder: () -> Unit,
+    onNewFile: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-            .padding(horizontal = SmithySpacing.gutter, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        shortcuts.forEach { (label, path) ->
-            val here = path == currentDir
-            // 用 Surface 当 chip：M3 的 FilterChip 要 experimental 注解，
-            // 而这里只需要「一个能点的圆角块 + 选中态」
-            Surface(
-                color = if (here) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainer,
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.clickable { onJump(path) },
-            ) {
-                Text(
-                    label,
-                    Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (here) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        Text("│", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         SortBy.entries.forEach { by ->
-            val on = by == sortBy
-            // 选中项靠底色区分，不用字重 —— 一排字重不同的标签看起来像没对齐
-            Surface(
-                color = if (on) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.clickable { onSort(by) },
-            ) {
+            // 选中项用字重+颜色区分，不用 Chip：那需要 experimental 注解，
+            // 而这里要的只是「哪个是当前排序」
+            TextButton(onClick = { onSort(by) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
                 Text(
                     by.label,
-                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (on) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (by == sortBy) FontWeight.Bold else FontWeight.Normal,
+                    color = if (by == sortBy) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        Text("│", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-        Surface(
-            color = if (showHidden) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-            shape = MaterialTheme.shapes.small,
-            modifier = Modifier.clickable { onToggleHidden() },
-        ) {
+        Text("|", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+        TextButton(onClick = onToggleHidden, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
             Text(
-                "隐藏项",
-                Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                if (showHidden) "隐藏项显示中" else "隐藏项",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (showHidden) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (showHidden) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        Text("|", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+        TextButton(onClick = onNewFolder, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+            Text("新建文件夹", style = MaterialTheme.typography.labelSmall)
+        }
+        TextButton(onClick = onNewFile, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+            Text("新建文件", style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -523,10 +439,33 @@ private fun StorageAccessBar(state: StorageAccess.State, onRequest: () -> Unit) 
     }
 }
 
+/**
+ * 快捷入口。
+ *
+ * 文件管理器最常用的几个位置各给一个按钮 —— 每次从 `/` 一层层点下去，
+ * 在最常去的那三四个地方是纯粹的浪费时间。
+ */
 @Composable
-private fun QuickSearch(filter: String, onFilter: (String) -> Unit, onClose: () -> Unit) {
+private fun ShortcutBar(items: List<Pair<String, String>>, onJump: (String) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = 6.dp),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items.forEach { (label, path) ->
+            OutlinedButton(
+                onClick = { onJump(path) },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+            ) {
+                Text(label, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilterRow(filter: String, onFilter: (String) -> Unit, onImport: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         OutlinedTextField(
@@ -536,70 +475,10 @@ private fun QuickSearch(filter: String, onFilter: (String) -> Unit, onClose: () 
             singleLine = true,
             placeholder = { Text("筛选名字") },
         )
+        // 「导入」放这里而不是标题栏：它和「筛选」一样是「对当前这一屏做的事」，
+        // 而标题栏那排已经被导航按钮占满了
         Spacer(Modifier.width(8.dp))
-        // 关掉时**同时清空关键词**：只收框不清词的话，用户关了搜索却还在筛，
-        // 会以为文件少了 —— 这种「看不见的生效条件」最难自查
-        TextButton(onClick = { onFilter(""); onClose() }) { Text("关掉") }
-    }
-}
-
-/**
- * 「更多」底部弹出条。
- *
- * 收进来的都是低频动作（导入、新建、切 root、进入多选）。它们原先各占一行 ——
- * 而那些位置是**每次浏览都在付**的成本。低频动作不该按常驻空间收费。
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ActionSheet(
-    rootMode: Boolean,
-    onToggleRoot: () -> Unit,
-    onImport: () -> Unit,
-    onNewFolder: () -> Unit,
-    onNewFile: () -> Unit,
-    onSelecting: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth()
-                .padding(start = SmithySpacing.gutter, end = SmithySpacing.gutter, bottom = 24.dp),
-        ) {
-            SheetGroup(
-                "这一屏",
-                listOf(
-                    "导入文件" to { onImport(); onDismiss() },
-                    "新建文件夹" to { onNewFolder(); onDismiss() },
-                    "新建文件" to { onNewFile(); onDismiss() },
-                    "多选" to { onSelecting(); onDismiss() },
-                ),
-            )
-            Spacer(Modifier.height(SmithySpacing.section))
-            SheetGroup(
-                "目录来源",
-                listOf(
-                    (if (rootMode) "退出 root（回到应用私有目录）" else "切到 root（整个文件系统）") to {
-                        onToggleRoot()
-                        onDismiss()
-                    },
-                ),
-            )
-        }
-    }
-}
-
-@Composable
-private fun SheetGroup(title: String, actions: List<Pair<String, () -> Unit>>) {
-    Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Spacer(Modifier.height(2.dp))
-    Column {
-        actions.forEach { (label, act) ->
-            Text(
-                label,
-                Modifier.fillMaxWidth().clickable(onClick = act).padding(vertical = 13.dp),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
+        Button(onClick = onImport) { Text("导入") }
     }
 }
 
@@ -666,9 +545,9 @@ private fun DirList(
                             )
                         }
                     }
-                    // 大小单独一列、右对齐、等宽。
-                    // 之前它跟「目录」挤在名字下面那一行 —— 那样一排数字是参差的，
-                    // 扫一眼比不出大小，而这正是列个文件列表最常做的事
+                    // 大小单独一列、右对齐、等宽 —— 结构没动，只是把这一列从
+                    // 「挤在名字下面那行」挪到右边并对齐：参差的数字扫一眼比不出大小，
+                    // 而那正是列个文件列表最常做的事
                     if (!item.dir) {
                         Text(
                             humanSize(item.size),
@@ -746,7 +625,7 @@ private fun SelectionBar(
     onDelete: () -> Unit,
 ) {
     val plan = state.renamePlan
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onToggleSelecting) {
@@ -962,7 +841,7 @@ private fun ConfirmDialog(
 
 @Composable
 private fun ZipHeader(zip: ZipUiState, busy: String?) {
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Text(
                 "包内浏览",

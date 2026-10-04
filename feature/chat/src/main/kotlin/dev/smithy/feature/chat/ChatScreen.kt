@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import dev.smithy.design.SmithySpacing
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -123,9 +124,9 @@ private fun TopBar(
     onAttach: () -> Unit,
     onClear: () -> Unit,
 ) {
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
@@ -246,7 +247,7 @@ private fun AssistantBubble(item: ChatItem.Assistant) {
 private fun ToolCard(item: ChatItem.Tool) {
     var expanded by remember { mutableStateOf(false) }
     Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MaterialTheme.colorScheme.surfaceContainer,
         shape = MaterialTheme.shapes.small,
         modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
     ) {

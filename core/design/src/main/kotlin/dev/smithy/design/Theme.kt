@@ -64,8 +64,16 @@ val SmithyShapes = Shapes(
  * 来自这里。统一成这几个值，改的时候也只用改一处。
  */
 object SmithySpacing {
-    /** 页面左右留白。 */
+    /** 页面左右留白，也是顶栏的左右内边距。 */
     val gutter = 12.dp
+
+    /**
+     * 顶栏的纵向内边距。
+     *
+     * 比 [rowVertical] 略小：顶栏里是文字按钮和图标，本身就带内边距，
+     * 再给 8dp 会显得空。各页原先 6 / 8 / 10 混着写，统一成这一个值。
+     */
+    val barVertical = 6.dp
 
     /** 列表行内边距。文件页要密，所以纵向给得小。 */
     val rowVertical = 8.dp

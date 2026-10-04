@@ -18,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import dev.smithy.design.SmithySpacing
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -72,9 +73,9 @@ fun ModuleScreen(
     // 正在编辑条目时占满整屏：改脚本要看得见上下文，旁边留一列按钮反而挤
     state.editing?.let { path ->
         Column(modifier.fillMaxSize()) {
-            Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+            Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(path, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
@@ -151,9 +152,9 @@ fun ModuleScreen(
 
 @Composable
 private fun HeaderRow(state: ModuleUiState, onOpen: () -> Unit, onClose: () -> Unit, onRefresh: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
