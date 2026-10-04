@@ -23,6 +23,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -32,8 +33,14 @@ import dev.smithy.feature.chat.ChatScreen
 import dev.smithy.feature.chat.ChatSettingsScreen
 import dev.smithy.feature.chat.ChatViewModel
 import dev.smithy.feature.files.FilesScreen
+import dev.smithy.feature.files.ModuleScreen
+import dev.smithy.feature.files.ModuleViewModel
 import dev.smithy.feature.files.StorageAccess
 import dev.smithy.feature.files.FilesViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -94,6 +101,7 @@ class MainActivity : ComponentActivity() {
 private enum class Tab(val label: String) {
     Files("文件"),
     Apk("工作台"),
+    Module("模块"),
     Chat("对话"),
     Settings("设置"),
 }
@@ -111,6 +119,28 @@ fun SmithyRoot(
     val chatVm = remember { ChatViewModel(app) }
     val chatState by chatVm.state.collectAsState()
     val filesVm = remember { FilesViewModel(app) }
+    val moduleVm = remember { ModuleViewModel(app) }
+    val moduleState by moduleVm.state.collectAsState()
+
+    // 模块 zip 要反复 seek（它是 zip），而 OpenDocument 只给 URI —— 所以先拷进缓存目录。
+    // 和「导入包」那边同一个理由
+    val scope = rememberCoroutineScope()
+    val pickModule = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val dst = withContext(Dispatchers.IO) {
+                    val f = File(app.cacheDir, "module-${System.currentTimeMillis()}.zip")
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        f.outputStream().use { input.copyTo(it) }
+                    }
+                    f
+                }
+                moduleVm.open(dst.absolutePath)
+            }
+        }
+    }
 
     // 从别处回来时重判一次访问能力。最要紧的场景是**去系统设置打开「所有文件访问」
     // 之后回来** —— 权限变了界面不会自己知道，还停在应用沙盒里
@@ -232,6 +262,27 @@ fun SmithyRoot(
                 Tab.Apk -> ApkWorkbenchScreen(
                     incomingUri = incomingUri,
                     onIncomingConsumed = onIncomingConsumed,
+                )
+
+                Tab.Module -> ModuleScreen(
+                    state = moduleState,
+                    onOpen = { pickModule.launch(arrayOf("*/*")) },
+                    onClose = moduleVm::close,
+                    onVersion = moduleVm::onVersion,
+                    onVersionCode = moduleVm::onVersionCode,
+                    onName = moduleVm::onName,
+                    onDescription = moduleVm::onDescription,
+                    onSaveProp = moduleVm::saveProp,
+                    onEditEntry = moduleVm::startEdit,
+                    onEditingText = moduleVm::updateEditing,
+                    onCancelEdit = moduleVm::cancelEdit,
+                    onSaveEntry = moduleVm::saveEntry,
+                    onInstall = moduleVm::install,
+                    onSetEnabled = moduleVm::setEnabled,
+                    onScheduleRemove = moduleVm::scheduleRemove,
+                    onUninstall = moduleVm::uninstallNow,
+                    onRestartZygote = moduleVm::restartZygote,
+                    onRefresh = moduleVm::refreshInstalled,
                 )
 
                 Tab.Chat -> {
