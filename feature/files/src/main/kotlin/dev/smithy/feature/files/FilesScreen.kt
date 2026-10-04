@@ -97,11 +97,14 @@ fun FilesScreen(
     onToggleHidden: () -> Unit,
     onNewFolder: (String) -> Unit,
     onNewFile: (String) -> Unit,
+    onChmod: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
     // 放进 VM 会让「取消」也要绕一圈去清
     var newTarget by remember { mutableStateOf<String?>(null) }
+    // 正在改权限的那个路径（null = 没在改）
+    var chmodTarget by remember { mutableStateOf<String?>(null) }
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
     // 把列表留在旁边只会把行宽挤到看不清
     state.editingPath?.let { path ->
@@ -115,7 +118,23 @@ fun FilesScreen(
         return
     }
 
-    state.properties?.let { props -> PropertiesCard(props, onDismissProperties) }
+    state.properties?.let { props ->
+        PropertiesCard(props, onDismissProperties, onChmod = { chmodTarget = props.path })
+    }
+
+    // 改权限。预填当前值 —— 常见操作是在它基础上改一位（比如 644 → 755），
+    // 让人从空框开始重敲一遍四位数字，是没必要的
+    chmodTarget?.let { path ->
+        TextInputDialog(
+            title = "改权限（八进制，如 644 / 755）",
+            initial = state.properties?.mode ?: "644",
+            onConfirm = { mode ->
+                chmodTarget = null
+                onChmod(path, mode)
+            },
+            onDismiss = { chmodTarget = null },
+        )
+    }
 
     // 新建时问名字。对话框状态放这一屏而不是 VM —— 它只活在这里，
     // 进 VM 的话「取消」还得绕一圈去清它
@@ -643,7 +662,7 @@ private fun RuleRow(label: String, value: String, onChange: (String) -> Unit) {
  * 而 SHA-256 有 64 个字符，挤在对话框的窄宽度里会折行，抄起来更容易错。
  */
 @Composable
-private fun PropertiesCard(props: Properties, onDismiss: () -> Unit) {
+private fun PropertiesCard(props: Properties, onDismiss: () -> Unit, onChmod: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
         Column(
             Modifier.fillMaxWidth().padding(12.dp),
@@ -657,6 +676,14 @@ private fun PropertiesCard(props: Properties, onDismiss: () -> Unit) {
             PropLine("路径", props.path)
             PropLine("大小", humanSize(props.size))
             PropLine("修改时间", humanTime(props.modified))
+            // 权限只有 root 下读得到，读不到就整行不显示 —— 编一个「644」出来
+            // 会让人以为那就是当前权限
+            if (props.mode != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PropLine("权限", "${props.mode}  ${props.owner ?: ""} ${props.group ?: ""}", Modifier.weight(1f))
+                    TextButton(onClick = onChmod) { Text("改") }
+                }
+            }
             props.note?.let { PropLine("摘要", it) }
             props.digests?.let { d ->
                 PropLine("MD5", d.md5)
@@ -668,8 +695,8 @@ private fun PropertiesCard(props: Properties, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun PropLine(label: String, value: String) {
-    Column {
+private fun PropLine(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,

@@ -144,15 +144,24 @@ data class Properties(
     val modified: Long,
     val digests: Hashing.Digests?,
     val note: String? = null,
+    /**
+     * 权限（八进制串，如 `644`）、属主、属组。root 模式下才有 —— 普通模式下
+     * 读不到就不显示，而不是编一个看着像真的的默认值。
+     */
+    val mode: String? = null,
+    val owner: String? = null,
+    val group: String? = null,
 )
 
 /**
  * 文件管理 + zip 直改。
  *
- * **为什么从应用的外部私有目录起步**（`getExternalFilesDir`）：走 SAF 能访问用户
- * 任意目录，但要处理 `DocumentFile` 的树形授权、虚拟文档、以及「同一条目有多个 URI」
- * 这些问题 —— 那是独立的一块工作。这里先把「看得见、改得动、存得下」跑通，
- * 而且这个目录不需要任何权限、也不会被系统清理。
+ * **浏览是完整的文件管理器**：有 root 就自动用它（落在 `/sdcard`），能进系统分区、
+ * 别的应用的数据、`/data/adb/modules`；没有 root 才退回应用私有目录。
+ *
+ * 早先这里只能看 `getExternalFilesDir` —— 那是把它当「改包的配套功能」时的选择，
+ * 而文件管理器该是「打开就能到任何地方」。没走 SAF 的理由仍然成立（要处理
+ * `DocumentFile` 的树形授权、虚拟文档、同一条目多 URI），但有 root 就不需要 SAF 了。
  */
 class FilesViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -557,12 +566,36 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(busy = "算摘要…", message = null, isError = false) }
             try {
                 val props = withContext(Dispatchers.IO) {
-                    if (item.dir) {
-                        Properties(item.name, item.path, 0, item.modified, null, "目录没有摘要")
+                    val root = _state.value.rootMode
+                    // 权限/属主只有 root 下读得到（`stat -c` 在普通身份下对系统路径
+                    // 要么拒绝要么给错），所以读不到就留 null，界面上不显示这一块
+                    val meta = if (root) RootFs.stat(item.path) else null
+
+                    // **摘要必须按模式分流**：`File(path)` 对 `/data/adb/...` 这类
+                    // 路径在应用身份下直接失败 —— root 模式下非走 RootFs 不可
+                    val digests = if (item.dir) {
+                        null
+                    } else if (root) {
+                        RootFs.read(item.path)?.let { Hashing.ofBytes(it) }
                     } else {
-                        val d = Hashing.of(File(item.path))
-                        Properties(item.name, item.path, d.size, item.modified, d)
+                        runCatching { Hashing.of(File(item.path)) }.getOrNull()
                     }
+
+                    Properties(
+                        name = item.name,
+                        path = item.path,
+                        size = digests?.size ?: item.size,
+                        modified = item.modified,
+                        digests = digests,
+                        note = when {
+                            item.dir -> "目录没有摘要"
+                            digests == null -> "读不到内容，算不了摘要"
+                            else -> null
+                        },
+                        mode = meta?.first,
+                        owner = meta?.second,
+                        group = meta?.third,
+                    )
                 }
                 _state.update { it.copy(busy = null, properties = props) }
             } catch (t: Throwable) {

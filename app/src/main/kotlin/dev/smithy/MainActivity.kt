@@ -177,6 +177,7 @@ fun SmithyRoot(
                     onToggleHidden = filesVm::toggleHidden,
                     onNewFolder = filesVm::mkdir,
                     onNewFile = filesVm::touch,
+                    onChmod = filesVm::chmod,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(
