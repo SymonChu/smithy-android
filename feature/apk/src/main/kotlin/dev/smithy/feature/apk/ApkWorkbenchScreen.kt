@@ -20,7 +20,9 @@ import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -37,9 +39,22 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * M1 的验收路径就是这条链：搜到开屏文案、改掉、打包签名、装回手机。
  */
 @Composable
-fun ApkWorkbenchScreen(modifier: Modifier = Modifier) {
+fun ApkWorkbenchScreen(
+    incomingUri: Uri? = null,
+    onIncomingConsumed: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     val vm: ApkWorkbenchViewModel = viewModel()
     val state by vm.state.collectAsState()
+
+    // 外部送进来的包直接打开，并**立刻消费掉**这个事件：
+    // 留着的话每次重组都会重新打开一遍，用户会看到界面莫名其妙回到初始状态
+    LaunchedEffect(incomingUri) {
+        incomingUri?.let {
+            vm.open(it)
+            onIncomingConsumed()
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(
         // 用 */* 而不是只限定 apk 的 MIME：不少文件管理器与网盘对

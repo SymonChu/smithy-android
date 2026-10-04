@@ -4,6 +4,8 @@ import android.app.Application
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
@@ -30,9 +32,43 @@ import dev.smithy.feature.files.FilesScreen
 import dev.smithy.feature.files.FilesViewModel
 
 class MainActivity : ComponentActivity() {
+
+    /**
+     * 外部送进来的包（文件管理器「打开方式」、分享）。
+     *
+     * 放在 State 里而不是只在 `onCreate` 读一次：App 已经开着时再从外部打开一个包走的是
+     * `onNewIntent`，不处理的话第二次打开毫无反应 —— 而用户会以为是那个包有问题。
+     *
+     * `ACTION_VIEW` 给的是 `data`，`ACTION_SEND` 给的是 `EXTRA_STREAM`，两种都要看：
+     * 「打开方式」和「分享到」是两条不同的入口，用户不区分它们，只期望都能用。
+     */
+    private val incoming = mutableStateOf<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { SmithyRoot() }
+        incoming.value = incomingUriOf(intent)
+        setContent {
+            SmithyRoot(
+                incomingUri = incoming.value,
+                onIncomingConsumed = { incoming.value = null },
+            )
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        incoming.value = incomingUriOf(intent)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun incomingUriOf(intent: Intent?): Uri? {
+        intent ?: return null
+        return when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data
+            Intent.ACTION_SEND -> intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+            else -> null
+        }
     }
 }
 
@@ -44,7 +80,10 @@ private enum class Tab(val label: String) {
 }
 
 @Composable
-fun SmithyRoot() {
+fun SmithyRoot(
+    incomingUri: Uri? = null,
+    onIncomingConsumed: () -> Unit = {},
+) {
     var tab by remember { mutableStateOf(Tab.Apk) }
 
     // VM 都提在这一层：切标签再切回来，正在跑的对话、正在浏览的目录都该保留
@@ -127,7 +166,10 @@ fun SmithyRoot() {
                     onImport = { pickImport.launch(arrayOf("*/*")) },
                 )
 
-                Tab.Apk -> ApkWorkbenchScreen()
+                Tab.Apk -> ApkWorkbenchScreen(
+                    incomingUri = incomingUri,
+                    onIncomingConsumed = onIncomingConsumed,
+                )
 
                 Tab.Chat -> {
                     // 切过来时刷新「当前操作的是哪个包」—— 用户可能刚在工作台换了包
