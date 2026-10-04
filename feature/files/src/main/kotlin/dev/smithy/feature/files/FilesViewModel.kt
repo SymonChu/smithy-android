@@ -10,6 +10,7 @@ import dev.smithy.fs.planRename
 import dev.smithy.fs.ZipEntryInfo
 import dev.smithy.fs.Hashing
 import dev.smithy.fs.HexEdit
+import dev.smithy.fs.NavBounds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -459,33 +460,52 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 回上级。普通模式不越出起始目录；root 模式到 `/` 为止。 */
+    /** 回上级。能不能上去由 [NavBounds] 判断：root 全通，非 root 看拿到什么权限。 */
     fun goUp() {
         val s = _state.value
-        if (s.rootMode) {
-            if (s.dir == "/" || s.dir.isEmpty()) {
-                _state.update { it.copy(message = "已经到最上层了", isError = false) }
-                return
-            }
-            openDir(s.dir.trimEnd('/').substringBeforeLast('/', "").ifEmpty { "/" })
+        // 上一级交给 NavBounds 算，不自己切字符串：`/sdcard` 在字符串上容易被切成空串，
+        // 而 openDir("") 什么都不做 —— 又是一次静默失败
+        val parent = NavBounds.parentOf(s.dir)
+        if (parent == null) {
+            _state.update { it.copy(message = "已经是根目录了", isError = false) }
             return
         }
-        val current = File(s.dir)
-        val parent = current.parentFile ?: return
-        if (!parent.absolutePath.startsWith(rootDir.absolutePath)) {
-            _state.update { it.copy(message = "已经到最上层了", isError = false) }
+        // 边界按「现在实际够得着什么」判断。
+        // 原先这里拿 rootDir（应用私有目录）当边界 —— 那是「浏览只能待在自己目录里」
+        // 那个设计的遗留，导致在 /sdcard 下点 ↑ 会被判成「已经到最上层了」，一动不动
+        if (!reachable(parent)) {
+            _state.update { it.copy(message = "上面那层需要 root（顶部可切换）", isError = true) }
             return
         }
-        openDir(parent.absolutePath)
+        openDir(parent)
+    }
+
+    /**
+     * 这个路径在当前权限下够不够得着。判断本身在 [NavBounds] 里（有单测盯着）。
+     *
+     * 主要是给调用点留个短名字，免得每一处都写四行参数。
+     */
+    private fun reachable(path: String): Boolean {
+        val s = _state.value
+        return NavBounds.canReach(
+            path = path,
+            root = s.rootMode,
+            allFilesAccess = s.storageAccess == StorageAccess.State.Granted,
+            sandboxDir = rootDir.absolutePath,
+        )
     }
 
     /**
      * 跳到任意路径（面包屑、快捷入口用）。
      *
-     * 越界检查只在**非 root** 模式下做 —— 有 root 时 `/` 就是边界，没有更上面的东西。
+     * 边界判断走 [NavBounds]，和 [goUp] 是同一个 —— 两处各写一份的结果就是
+     * 一个能上去、一个不能，而用户只觉得「返回坏了」。
      */
     fun jumpTo(path: String) {
-        if (!_state.value.rootMode && !path.startsWith(rootDir.absolutePath)) {
+        // 和 goUp 用同一个边界判断。之前这里也是拿 rootDir 当边界，
+        // 于是点面包屑里的上一级会被判成「这个位置需要 root」—— 和 ↑ 一起坏掉，
+        // 用户看到的就是「返回没有用，点路径也没用」
+        if (!reachable(path)) {
             _state.update { it.copy(message = "这个位置需要 root（顶部可切换）", isError = true) }
             return
         }
@@ -1226,7 +1246,10 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     fun breadcrumbs(path: String): List<Pair<String, String>> {
         val parts = path.trim('/').split('/').filter { it.isNotEmpty() }
         var acc = ""
-        return parts.map { p -> acc = "$acc/$p"; acc to p }
+        val crumbs = parts.map { p -> acc = "$acc/$p"; acc to p }
+        // 最前面补一个「根」。之前 `/sdcard/Download` 只有「sdcard / Download」两级 ——
+        // 想回 `/` 得一层层点上去，而没有 root 时 `/sdcard` 恰好又是个上不去的顶
+        return listOf("/" to "根") + crumbs
     }
 
     /** 常用的几个位置，做成快捷入口。 */
