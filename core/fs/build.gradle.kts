@@ -16,4 +16,15 @@ android {
 
 dependencies {
     implementation(libs.coroutines.android)
-    implementation(libs.simplemagic)}
+    implementation(libs.simplemagic)
+
+    testImplementation(kotlin("test"))
+    testImplementation("junit:junit:4.13.2")
+}
+
+tasks.withType<Test>().configureEach {
+    testLogging {
+        showStandardStreams = true
+        events("passed", "failed", "skipped")
+    }
+}
