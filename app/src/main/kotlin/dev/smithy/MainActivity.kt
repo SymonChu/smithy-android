@@ -3,7 +3,9 @@ package dev.smithy
 import android.app.Application
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -18,13 +20,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import dev.smithy.feature.apk.ApkWorkbenchScreen
 import dev.smithy.feature.chat.ChatScreen
 import dev.smithy.feature.chat.ChatSettingsScreen
 import dev.smithy.feature.chat.ChatViewModel
+import dev.smithy.feature.files.FilesScreen
+import dev.smithy.feature.files.FilesViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,10 +47,25 @@ private enum class Tab(val label: String) {
 fun SmithyRoot() {
     var tab by remember { mutableStateOf(Tab.Apk) }
 
-    // 对话的 VM 提在这一层：切到别的标签再切回来，正在跑的对话不该丢
+    // VM 都提在这一层：切标签再切回来，正在跑的对话、正在浏览的目录都该保留
     val app = LocalContext.current.applicationContext as Application
     val chatVm = remember { ChatViewModel(app) }
     val chatState by chatVm.state.collectAsState()
+    val filesVm = remember { FilesViewModel(app) }
+    val filesState by filesVm.state.collectAsState()
+
+    // 替换包内条目：先选设备上的文件，再把它读进待改动列表
+    var replacingEntry by remember { mutableStateOf<String?>(null) }
+    val pickSource = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        val entry = replacingEntry
+        replacingEntry = null
+        if (uri != null && entry != null) filesVm.replaceEntryFromUri(entry, uri)
+    }
+    val pickTarget = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri -> if (uri != null) filesVm.saveZipToUri(uri) }
 
     Scaffold(
         bottomBar = {
@@ -65,8 +83,22 @@ fun SmithyRoot() {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (tab) {
-                // M4：双窗口 + zip 直改 + 编辑器
-                Tab.Files -> Placeholder("双窗口文件管理（M4）")
+                Tab.Files -> FilesScreen(
+                    state = filesState,
+                    relative = filesVm::relative,
+                    onOpenDir = filesVm::openDir,
+                    onOpenItem = filesVm::open,
+                    onGoUp = filesVm::goUp,
+                    onFilter = filesVm::onFilter,
+                    onCloseZip = filesVm::closeZip,
+                    onReplaceEntry = { entry ->
+                        replacingEntry = entry
+                        pickSource.launch(arrayOf("*/*"))
+                    },
+                    onDeleteEntry = filesVm::deleteEntry,
+                    onUndoEntry = filesVm::undoEntry,
+                    onSaveZip = { pickTarget.launch("output.zip") },
+                )
 
                 Tab.Apk -> ApkWorkbenchScreen()
 
@@ -92,9 +124,4 @@ fun SmithyRoot() {
             }
         }
     }
-}
-
-@Composable
-private fun Placeholder(text: String) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(text) }
 }

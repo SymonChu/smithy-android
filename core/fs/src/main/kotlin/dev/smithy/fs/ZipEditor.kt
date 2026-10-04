@@ -95,6 +95,21 @@ class ZipEditor private constructor(private val source: File) : AutoCloseable {
     fun changeCount(): Int = puts.size
 
     /**
+     * 撤回某个条目的未写盘改动。
+     *
+     * 改动都攒在内存里、还没写盘，所以撤回就是把它从待写列表里去掉 ——
+     * 不需要「关掉重开」那种做法（那会连带丢掉别的改动，用户会莫名其妙）。
+     */
+    fun revert(path: String) {
+        puts.remove(path)
+    }
+
+    /** 撤回全部改动。 */
+    fun revertAll() {
+        puts.clear()
+    }
+
+    /**
      * 写出到 [target]。
      *
      * **未改动的条目原样搬运**：内容按原样复制，不做任何解析。压缩条目会由
