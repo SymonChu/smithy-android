@@ -17,9 +17,11 @@ import dev.smithy.engine.InstallVia
 import dev.smithy.engine.ManifestField
 import dev.smithy.engine.PatchRecord
 import dev.smithy.engine.PatchOrigin
+import dev.smithy.engine.ReplaceScope
 import dev.smithy.engine.ResourceEntry
 import dev.smithy.engine.SignConfig
 import dev.smithy.engine.SignatureInfo
+import dev.smithy.engine.StringReplacement
 import dev.smithy.engine.VerifyResult
 import dev.smithy.engine.WorkspaceState
 import dev.smithy.engine.DexHit
@@ -200,6 +202,45 @@ internal class ApkProjectImpl(
         zip.getInputStream(entry).use { ins -> out.outputStream().use { ins.copyTo(it) } }
         return out
     }
+
+    // ── 资源层改动落进覆盖层 ──────────────────────────────────
+
+    /**
+     * 把 ARSCLib 改过的资源表 / 清单落进覆盖层。
+     *
+     * 两个条目都检查一遍，但**只 stage 真的变了的那个**：`resources.arsc` 常有几 MB，
+     * 改个应用名却把整张表塞进覆盖层是白费磁盘 —— 而且会让「改了哪些东西」变得看不清。
+     */
+    private fun stageArscChanges(note: String?, want: String? = null): List<PatchRecord> {
+        val files = ArscBridge.writeAndExtract(module, ArscBridge.ENTRIES, tmpDir("arsc"))
+        val out = mutableListOf<PatchRecord>()
+
+        for ((name, after) in files) {
+            if (want != null && name != want) continue
+            if (isUnchanged(name, after)) continue
+            out += stageEntry(
+                entryPath = name,
+                after = after,
+                kind = if (name.endsWith(".arsc")) {
+                    PatchRecord.PatchKind.ARSC
+                } else {
+                    PatchRecord.PatchKind.MANIFEST
+                },
+                note = note,
+            )
+        }
+        return out
+    }
+
+    /** 字节是否与原包里那份完全一致 —— 一致就没必要进覆盖层。 */
+    private fun isUnchanged(entryPath: String, after: File): Boolean {
+        val entry = zip.getEntry(entryPath) ?: return false
+        if (entry.size != after.length()) return false
+        return runCatching {
+            zip.getInputStream(entry).use { it.readBytes() }.contentEquals(after.readBytes())
+        }.getOrDefault(false)
+    }
+
     override suspend fun dexSearch(query: DexQuery): List<DexHit> = withContext(Dispatchers.IO) {
         DexSearch.run(dexIndex(), query)
     }
@@ -280,35 +321,114 @@ internal class ApkProjectImpl(
     }
 
 
-    override suspend fun resources(type: String?, filter: String?): List<ResourceEntry> = todo("resources")
-    override suspend fun setResource(resName: String, value: String): PatchRecord = todo("setResource")
-    /**
-     * 批量替换 dex 里的字符串常量。
-     *
-     * 只对「确实含目标字符串」的 dex 动手：rewrite 会重建整个 dex 的对象树，
-     * 一个包十几个 dex 全量重写既慢又费内存（见 [DexEditor] 的说明）。
-     */
-    override suspend fun replaceString(from: String, to: String, regex: Boolean): List<PatchRecord> =
+    override suspend fun resources(type: String?, filter: String?): List<ResourceEntry> =
         withContext(Dispatchers.IO) {
-            val rx = if (regex) Regex(from) else null
-            val index = dexIndex()
+            ArscBridge.list(module, type, filter, RESOURCE_LIST_LIMIT)
+        }
+
+    /**
+     * 改一条字符串资源，如 `@string/app_name`。
+     *
+     * 与 [setManifestField] 的分工：应用名写在 `@string/app_name` 里时改这个；
+     * 清单里写死了字面量时改那个。
+     */
+    override suspend fun setResource(resName: String, value: String): PatchRecord =
+        withContext(Dispatchers.IO) {
+            if (!ArscBridge.setString(module, resName, value)) {
+                throw NoSuchElementException(
+                    "资源表里没有 $resName —— 名字要写成 @string/app_name 这种形式（先用 resources() 看一眼有哪些）",
+                )
+            }
+            stageArscChanges(note = "资源改写：$resName = $value", want = "resources.arsc").firstOrNull()
+                ?: throw IllegalStateException("资源改了但没产出可用的 resources.arsc，这个包的表可能不是标准格式")
+        }
+
+    override suspend fun replaceString(from: String, to: String, regex: Boolean): List<PatchRecord> =
+        // 正则走单独一条路：批量接口收的是字面量对，多条正则没法合并成一次扫描
+        if (regex) replaceByRegex(from, to) else replaceStrings(listOf(StringReplacement(from, to)))
+
+    /**
+     * 批量替换。**关键在「只落地一次」**：
+     *
+     * - dex 层：每个 dex 只重建成对象树一次（不是每组替换重建一次）
+     * - 资源层：所有替换都做完，才让 ARSCLib 序列化一次资源表
+     *
+     * 单条也走这条路 —— 两条路径语义完全一致，才不会出现「单条能用、批量行为不同」这种坑。
+     */
+    override suspend fun replaceStrings(pairs: List<StringReplacement>, scope: ReplaceScope): List<PatchRecord> =
+        withContext(Dispatchers.IO) {
+            if (pairs.isEmpty()) return@withContext emptyList()
             val out = mutableListOf<PatchRecord>()
 
+            // ── dex 层 ──
+            // 代价要知道：每个命中的 dex 都要重建成对象树再写出，65k 方法的 dex 是秒级。
+            // 实测 200 组规则命中 5 个 dex 要 25 秒 —— 所以只改文案时应当传 scope = ARSC
+            // 把这一整段跳过去（见 ReplaceScope 的说明）。
+            if (scope != ReplaceScope.ARSC) {
+                val index = dexIndex()
+                for (dexName in index.names) {
+                    // DexEditor 内部会先数一遍，不含命中的 dex 直接短路，不为它白建对象树
+                    val tmp = File(tmpDir("dex"), dexName)
+                    val result = DexEditor.replaceStrings(index, dexName, pairs, tmp) ?: continue
+                    out += stageEntry(
+                        entryPath = dexName,
+                        after = result.file,
+                        kind = PatchRecord.PatchKind.ENTRY_REPLACE,
+                        note = "字符串替换 ${pairs.size} 组（命中 ${result.replaced} 处）",
+                    )
+                }
+            }
+
+            // ── 资源层 ──
+            // 同一个文案可能硬编码在 dex 里，也可能是 strings.xml 的一条资源 ——
+            // 用户搜一个词时不该关心它躺在哪一层。
+            if (scope != ReplaceScope.DEX) {
+                val arscHits = runCatching { ArscBridge.replaceStrings(module, pairs) }.getOrDefault(0)
+                if (arscHits > 0) {
+                    out += stageArscChanges(note = "资源字符串替换 ${pairs.size} 组（命中 $arscHits 处）")
+                }
+            }
+            out
+        }
+
+    /** 正则替换：只有单个入口。多条正则合并扫描的收益不值得那份复杂度。 */
+    private suspend fun replaceByRegex(pattern: String, to: String): List<PatchRecord> =
+        withContext(Dispatchers.IO) {
+            val rx = Regex(pattern)
+            val index = dexIndex()
+            val out = mutableListOf<PatchRecord>()
             for (dexName in index.names) {
-                // replaceString 内部会先数一遍，不含命中的 dex 直接短路，
-                // 不会为它白建对象树（见 DexEditor.replaceString）
                 val tmp = File(tmpDir("dex"), dexName)
-                val result = DexEditor.replaceString(index, dexName, from, to, rx, tmp) ?: continue
+                val result = DexEditor.replaceString(index, dexName, pattern, to, rx, tmp) ?: continue
                 out += stageEntry(
                     entryPath = dexName,
                     after = result.file,
                     kind = PatchRecord.PatchKind.ENTRY_REPLACE,
-                    note = "字符串替换：$from → $to（命中 ${result.replaced} 处）",
+                    note = "正则替换：$pattern → $to（命中 ${result.replaced} 处）",
                 )
+            }
+
+            val arscHits = runCatching { ArscBridge.replaceStringsRegex(module, rx, to) }.getOrDefault(0)
+            if (arscHits > 0) {
+                out += stageArscChanges(note = "资源正则替换：$pattern → $to（命中 $arscHits 处）")
             }
             out
         }
-    override suspend fun setManifestField(field: ManifestField, value: String): PatchRecord = todo("setManifestField")
+    /**
+     * 改清单字段。
+     *
+     * **改包名要慎重**：它连带影响组件名、权限、provider authority，而且装上去就是一个
+     * 全新的应用，不会覆盖原应用（也就意味着「改包名绕过签名校验」这条路不存在）。
+     */
+    override suspend fun setManifestField(field: ManifestField, value: String): PatchRecord =
+        withContext(Dispatchers.IO) {
+            if (!ArscBridge.setManifestField(module, field, value)) {
+                throw IllegalStateException("改 $field 失败：清单可能不是标准格式，或这个值不合法（$value）")
+            }
+            stageArscChanges(note = "清单改写：$field = $value", want = "AndroidManifest.xml").firstOrNull()
+                ?: throw IllegalStateException("清单改了但没产出可用的 AndroidManifest.xml")
+        }
+
     override suspend fun replaceIcon(source: String, densities: List<String>?): List<PatchRecord> = todo("replaceIcon")
 
     /**
@@ -516,6 +636,9 @@ internal class ApkProjectImpl(
         }
 
         private const val UNKNOWN = "—"
+
+        /** 资源列表一次最多给这么多条：正常 App 上万条资源，全量倒给 UI 既慢又没用 */
+        private const val RESOURCE_LIST_LIMIT = 500
 
         /** classes.dex → 1, classes2.dex → 2 …，用于 dex 数字序排序 */
         private val DEX_INDEX = Regex("""classes(\d*)\.dex""")

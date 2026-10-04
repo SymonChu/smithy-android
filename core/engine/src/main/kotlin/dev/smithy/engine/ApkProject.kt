@@ -47,6 +47,25 @@ interface ApkProject : AutoCloseable {
     suspend fun resources(type: String? = null, filter: String? = null): List<ResourceEntry>
     suspend fun setResource(resName: String, value: String): PatchRecord
     suspend fun replaceString(from: String, to: String, regex: Boolean = false): List<PatchRecord>
+
+    /**
+     * 一次替换多组字符串（dex 常量 + 资源表两层一起）。
+     *
+     * **为什么必须有批量入口**：[replaceString] 每调用一次就要让 ARSCLib 把资源表
+     * 序列化一遍（它得写出临时整包才能拿到新的 `resources.arsc`）。实测单次改资源
+     * 的端到端代价在秒级，连着替换 200 条文案就是十分钟 ——
+     * 而 M2 的验收要求是 30 秒内。
+     *
+     * 批量把「所有替换都在内存里做完，最后只序列化一次」，
+     * dex 层同理：每个 dex 只重建成对象树一次。
+     *
+     * 只在需要正则时用 [replaceString]：批量走的是字面量匹配。
+     */
+    suspend fun replaceStrings(
+        pairs: List<StringReplacement>,
+        scope: ReplaceScope = ReplaceScope.BOTH,
+    ): List<PatchRecord>
+
     suspend fun setManifestField(field: ManifestField, value: String): PatchRecord
     suspend fun replaceIcon(source: String, densities: List<String>? = null): List<PatchRecord>
 
@@ -62,6 +81,35 @@ interface ApkProject : AutoCloseable {
 }
 
 // ── 配套类型 ────────────────────────────────────────────────
+
+/**
+ * 字符串替换的作用域。
+ *
+ * **为什么要这个参数**：两层的代价差两个数量级。资源层是「内存里改表、序列化一次」，
+ * 200 组约两秒；dex 层每个命中的 dex 都要重建成对象树再写出，65k 方法的 dex 是秒级，
+ * 实测 200 组规则命中 5 个 dex 要 25 秒。
+ *
+ * 而「改文案」这个需求绝大多数时候只需要动资源表 —— 硬编码在代码里的文案本来就少，
+ * 用户想批量本地化时更不该为此等半分钟。
+ */
+enum class ReplaceScope {
+    /** 只改 dex 里的字符串常量（硬编码文案） */
+    DEX,
+
+    /** 只改资源表里的字符串（改文案的主力路径） */
+    ARSC,
+
+    /** 两层都改（搜一个词、不确定它躺在哪层时用） */
+    BOTH,
+}
+
+/**
+ * 一组字符串替换。
+ *
+ * 改文案时几乎总是「一次改很多条」（本地化、统一改名），所以接口直接收列表 ——
+ * 一条一条调的话，每条都要把资源表序列化一遍。
+ */
+data class StringReplacement(val from: String, val to: String)
 
 data class DexQuery(
     val text: String,

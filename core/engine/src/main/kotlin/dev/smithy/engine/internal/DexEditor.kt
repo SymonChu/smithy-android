@@ -15,6 +15,7 @@ import com.android.tools.smali.dexlib2.rewriter.InstructionRewriter
 import com.android.tools.smali.dexlib2.rewriter.Rewriter
 import com.android.tools.smali.dexlib2.rewriter.RewriterModule
 import com.android.tools.smali.dexlib2.rewriter.Rewriters
+import dev.smithy.engine.StringReplacement
 import java.io.File
 
 /**
@@ -122,6 +123,91 @@ internal object DexEditor {
             }
         }
         return n
+    }
+
+    /**
+     * 一次替换一个 dex 里的**多组**字符串常量。
+     *
+     * 逐组调用 [replaceString] 结果一样，但会把整个 dex 反复重建成对象树
+     * （65k 方法的 dex 每次几百毫秒起）。批量只在最后写一次。
+     *
+     * 匹配策略与资源层保持一致：**按列表顺序，一条值只应用第一个命中的规则**，
+     * 不做连锁替换（否则 `A→B`、`B→C` 两条规则会把 A 一路带成 C）。
+     */
+    fun replaceStrings(
+        index: DexIndex,
+        dexName: String,
+        pairs: List<StringReplacement>,
+        outFile: File,
+    ): Result? {
+        val dex = index.dex(dexName) ?: return null
+        if (pairs.isEmpty()) return null
+
+        val hits = countMatchesAny(index, dexName, pairs)
+        if (hits == 0) return null
+
+        var touched = 0
+
+        val module = object : RewriterModule() {
+            override fun getInstructionRewriter(rewriters: Rewriters): Rewriter<Instruction> =
+                object : InstructionRewriter(rewriters) {
+                    override fun rewrite(instruction: Instruction): Instruction {
+                        val current = constString(instruction) ?: return super.rewrite(instruction)
+                        val next = applyFirst(pairs, current)
+                        if (next == current) return super.rewrite(instruction)
+
+                        touched++
+                        return when (instruction) {
+                            is Instruction21c -> ImmutableInstruction21c(
+                                instruction.opcode,
+                                instruction.registerA,
+                                ImmutableStringReference(next),
+                            )
+                            is Instruction31c -> ImmutableInstruction31c(
+                                instruction.opcode,
+                                instruction.registerA,
+                                ImmutableStringReference(next),
+                            )
+                            else -> super.rewrite(instruction)
+                        }
+                    }
+                }
+        }
+
+        val rewritten = DexRewriter(module).dexFileRewriter.rewrite(dex)
+        // 同 replaceString：必须写出去，惰性代理才会展开到 instruction 层
+        DexFileFactory.writeDexFile(outFile.absolutePath, rewritten)
+
+        if (touched == 0) {
+            outFile.delete()
+            return null
+        }
+        return Result(outFile, hits)
+    }
+
+    /** 批量版的命中计数：值里含任一 from 就算命中（与替换时的子串语义一致）。 */
+    private fun countMatchesAny(index: DexIndex, dexName: String, pairs: List<StringReplacement>): Int {
+        val dex = index.dex(dexName) ?: return 0
+        val froms = pairs.map { it.from }
+        var n = 0
+        for (classDef in dex.classes) {
+            for (m in classDef.methods) {
+                val impl = m.implementation ?: continue
+                for (ins in impl.instructions) {
+                    val s = constString(ins) ?: continue
+                    if (froms.any { s.contains(it) }) n++
+                }
+            }
+        }
+        return n
+    }
+
+    /** 按顺序找到第一条命中的规则并应用，只应用一条。 */
+    private fun applyFirst(pairs: List<StringReplacement>, value: String): String {
+        for (p in pairs) {
+            if (value.contains(p.from)) return value.replace(p.from, p.to)
+        }
+        return value
     }
 
     private fun constString(ins: Instruction): String? {
