@@ -92,6 +92,39 @@ object RootFs {
             .exec().isSuccess
     }.getOrDefault(false)
 
+    /** 新建目录。已存在时返回 false（**不静默当成成功**）。 */
+    fun mkdir(path: String): Boolean = runCatching {
+        Shell.cmd("mkdir ${q(path)} 2>&1").exec().isSuccess
+    }.getOrDefault(false)
+
+    /** 新建空文件。已存在时返回 false。 */
+    fun touch(path: String): Boolean = runCatching {
+        Shell.cmd("touch ${q(path)} 2>&1").exec().isSuccess
+    }.getOrDefault(false)
+
+    /**
+     * 改权限。`mode` 是八进制串（如 `644`）。
+     *
+     * 格式校验放在调用方（VM）：那里能给一句人话的提示，而丢给 shell 只会回一段
+     * 看不懂的 stderr。
+     */
+    fun chmod(path: String, mode: String): Boolean = runCatching {
+        Shell.cmd("chmod ${q(mode)} ${q(path)} 2>&1").exec().isSuccess
+    }.getOrDefault(false)
+
+    /**
+     * 读权限与属主，形如 `644 root root`。
+     *
+     * 用 `stat -c`：它在 toybox 和 busybox 上都有（GNU 的 `--format` 不一定）。
+     * 取不到返回 null —— 界面上不显示这一块，而不是瞎猜一个值出来。
+     */
+    fun stat(path: String): Triple<String, String, String>? = runCatching {
+        val line = Shell.cmd("stat -c '%a %U %G' ${q(path)} 2>/dev/null")
+            .exec().out.firstOrNull()?.trim().orEmpty()
+        val parts = line.split(Regex("\\s+"))
+        if (parts.size < 3) null else Triple(parts[0], parts[1], parts[2])
+    }.getOrNull()
+
     /** 在 shell 里安全引用一个路径（单引号包裹，内部的引号转义）。 */
     private fun q(s: String) = "'" + s.replace("'", "'\\''") + "'"
 }

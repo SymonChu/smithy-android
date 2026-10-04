@@ -93,8 +93,15 @@ fun FilesScreen(
     breadcrumbs: (String) -> List<Pair<String, String>>,
     shortcuts: () -> List<Pair<String, String>>,
     onJumpTo: (String) -> Unit,
+    onSort: (SortBy) -> Unit,
+    onToggleHidden: () -> Unit,
+    onNewFolder: (String) -> Unit,
+    onNewFile: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
+    // 放进 VM 会让「取消」也要绕一圈去清
+    var newTarget by remember { mutableStateOf<String?>(null) }
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
     // 把列表留在旁边只会把行宽挤到看不清
     state.editingPath?.let { path ->
@@ -109,6 +116,20 @@ fun FilesScreen(
     }
 
     state.properties?.let { props -> PropertiesCard(props, onDismissProperties) }
+
+    // 新建时问名字。对话框状态放这一屏而不是 VM —— 它只活在这里，
+    // 进 VM 的话「取消」还得绕一圈去清它
+    newTarget?.let { kind ->
+        TextInputDialog(
+            title = kind,
+            initial = if (kind == "新建文件夹") "新建文件夹" else "新建文件.txt",
+            onConfirm = { name ->
+                newTarget = null
+                if (kind == "新建文件夹") onNewFolder(name) else onNewFile(name)
+            },
+            onDismiss = { newTarget = null },
+        )
+    }
 
     Column(modifier.fillMaxSize()) {
         val zip = state.zip
@@ -125,6 +146,11 @@ fun FilesScreen(
                     DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
                     FilterRow(state.filter, onFilter, onImport)
                     ShortcutBar(shortcuts(), onJumpTo)
+                    DirToolbar(
+                        state.sortBy, state.showHidden, onSort, onToggleHidden,
+                        onNewFolder = { newTarget = "新建文件夹" },
+                        onNewFile = { newTarget = "新建文件" },
+                    )
                     SelectionBar(
                         state = state,
                         onToggleSelecting = onToggleSelecting,
@@ -175,6 +201,11 @@ fun FilesScreen(
             DirHeader(breadcrumbs(state.dir), onJumpTo, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
             FilterRow(state.filter, onFilter, onImport)
             ShortcutBar(shortcuts(), onJumpTo)
+            DirToolbar(
+                state.sortBy, state.showHidden, onSort, onToggleHidden,
+                onNewFolder = { newTarget = "新建文件夹" },
+                onNewFile = { newTarget = "新建文件" },
+            )
             SelectionBar(
                 state = state,
                 onToggleSelecting = onToggleSelecting,
@@ -275,6 +306,56 @@ private fun DirHeader(
                     TextButton(onClick = onClearClipboard) { Text("取消") }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 列表工具：排序、隐藏文件、新建。
+ *
+ * 和快捷入口分开成一行：那行是「去哪儿」，这行是「这一屏怎么显示、能加什么」。
+ * 混在一起会让两件事互相抢位置，而两者都常用。
+ */
+@Composable
+private fun DirToolbar(
+    sortBy: SortBy,
+    showHidden: Boolean,
+    onSort: (SortBy) -> Unit,
+    onToggleHidden: () -> Unit,
+    onNewFolder: () -> Unit,
+    onNewFile: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SortBy.entries.forEach { by ->
+            // 选中项用字重+颜色区分，不用 Chip：那需要 experimental 注解，
+            // 而这里要的只是「哪个是当前排序」
+            TextButton(onClick = { onSort(by) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                Text(
+                    by.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (by == sortBy) FontWeight.Bold else FontWeight.Normal,
+                    color = if (by == sortBy) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text("|", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+        TextButton(onClick = onToggleHidden, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+            Text(
+                if (showHidden) "隐藏项显示中" else "隐藏项",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (showHidden) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text("|", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+        TextButton(onClick = onNewFolder, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+            Text("新建文件夹", style = MaterialTheme.typography.labelSmall)
+        }
+        TextButton(onClick = onNewFile, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+            Text("新建文件", style = MaterialTheme.typography.labelSmall)
         }
     }
 }

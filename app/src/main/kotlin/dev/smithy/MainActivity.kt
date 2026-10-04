@@ -173,6 +173,10 @@ fun SmithyRoot(
                     breadcrumbs = filesVm::breadcrumbs,
                     shortcuts = filesVm::shortcuts,
                     onJumpTo = filesVm::jumpTo,
+                    onSort = filesVm::setSort,
+                    onToggleHidden = filesVm::toggleHidden,
+                    onNewFolder = filesVm::mkdir,
+                    onNewFile = filesVm::touch,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(

@@ -56,6 +56,18 @@ private val BINARY_EXTS = setOf(
 )
 
 /**
+ * 列表排序方式。
+ *
+ * 目录永远排在文件前面（那是文件管理器的通例：先看到能进去的东西），
+ * 只在同一类内部按 [SortBy] 排。
+ */
+enum class SortBy(val label: String) {
+    NAME("名字"),
+    SIZE("大小"),
+    TIME("时间"),
+}
+
+/**
  * 待粘贴的条目。
  *
  * [cut] 为 true 是「剪切」（粘贴时移动并删源），false 是「复制」。
@@ -96,6 +108,18 @@ data class FilesUiState(
      * 粘贴板里的东西（null = 没有）。有它的时候，目录栏上会出现「粘贴」。
      */
     val clipboard: Clipboard? = null,
+
+    /** 排序方式。目录恒在文件之前，这里只管同一类内部的顺序。 */
+    val sortBy: SortBy = SortBy.NAME,
+
+    /**
+     * 是否显示以 `.` 开头的条目。
+     *
+     * **默认关**：Android 的 `/sdcard` 下有 `.thumbnails` 之类一堆东西，
+     * 默认显示会把正常内容淹掉。但 `.nomedia`、`.gitignore` 这类又是要改的对象，
+     * 所以给个开关而不是一律隐藏。
+     */
+    val showHidden: Boolean = false,
 
     /**
      * root 模式。
@@ -296,7 +320,23 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
                         dir.listFiles().orEmpty().map { f ->
                             FsItem(f.name, f.absolutePath, f.isDirectory, f.length(), f.lastModified())
                         }
-                    }.sortedWith(compareByDescending<FsItem> { it.dir }.thenBy { it.name.lowercase() })
+                    }.let { list ->
+                        // 先过滤隐藏项，再排序 —— 排序前过滤能少排一批，
+                        // 而且顺序反了会把「隐藏文件」也算进「全选」的语义里
+                        if (_state.value.showHidden) list else list.filter { !it.name.startsWith(".") }
+                    }.sortedWith(
+                        // 目录恒在前（文件管理器的通例：先看到能进去的东西），
+                        // 同一类内部才按所选方式排
+                        compareByDescending<FsItem> { it.dir }.thenBy {
+                            when (_state.value.sortBy) {
+                                SortBy.NAME -> it.name.lowercase()
+                                // 大小/时间都是降序（大的、新的在前）更符合直觉，
+                                // 用「补零的字符串」实现：比较器要求同类型，转字符串最省事
+                                SortBy.SIZE -> "%020d".format(-it.size)
+                                SortBy.TIME -> "%020d".format(-it.modified)
+                            }
+                        },
+                    )
                 }
                 _state.update { it.copy(dir = path, items = items, busy = null) }
             } catch (t: Throwable) {
@@ -372,6 +412,116 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onFilter(text: String) = _state.update { it.copy(filter = text) }
+
+    /** 换排序方式（只影响当前列表的顺序，不重新读盘）。 */
+    fun setSort(by: SortBy) {
+        _state.update { it.copy(sortBy = by) }
+        openDir(_state.value.dir)
+    }
+
+    fun toggleHidden() {
+        _state.update { it.copy(showHidden = !it.showHidden) }
+        openDir(_state.value.dir)
+    }
+
+    // ── 新建 ───────────────────────────────────────────────────
+
+    /**
+     * 在当前目录新建文件夹。
+     *
+     * **已存在就报错，不静默通过**：`mkdir` 对已存在的目录返回失败，
+     * 如果当成成功，用户会以为建了、其实什么都没发生（而他才刚看到「成功」）。
+     */
+    fun mkdir(name: String) {
+        val s = _state.value
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "新建文件夹…", message = null, isError = false) }
+            try {
+                val target = joinPath(s.dir, name)
+                val ok = withContext(Dispatchers.IO) {
+                    if (s.rootMode) RootFs.mkdir(target)
+                    else File(target).mkdir()
+                }
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        message = if (ok) "已新建文件夹 $name" else "新建失败：「$name」可能已经存在",
+                        isError = !ok,
+                    )
+                }
+                openDir(s.dir)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /** 新建空文件。 */
+    fun touch(name: String) {
+        val s = _state.value
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "新建文件…", message = null, isError = false) }
+            try {
+                val target = joinPath(s.dir, name)
+                val ok = withContext(Dispatchers.IO) {
+                    if (s.rootMode) RootFs.touch(target)
+                    else runCatching { File(target).createNewFile() }.getOrDefault(false)
+                }
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        message = if (ok) "已新建文件 $name" else "新建失败：「$name」可能已经存在",
+                        isError = !ok,
+                    )
+                }
+                openDir(s.dir)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    // ── 权限 ───────────────────────────────────────────────────
+
+    /**
+     * 改权限（八进制串，如 `644`、`755`）。
+     *
+     * **只在 root 模式下可用**：普通应用改不了别处的属主与位（连自己沙盒里的某些位都受限），
+     * 所以这里不假装能用，界面上会说明。
+     */
+    fun chmod(path: String, mode: String) {
+        val s = _state.value
+        if (!s.rootMode) {
+            _state.update { it.copy(message = "改权限需要 root 模式", isError = true) }
+            return
+        }
+        // 八进制且 3~4 位：挡掉拼错的输入，而不是把它交给 shell 去猜
+        if (!Regex("^[0-7]{3,4}$").matches(mode)) {
+            _state.update { it.copy(message = "权限要写八进制，比如 644 / 755 / 0644", isError = true) }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "改权限…", message = null, isError = false) }
+            try {
+                val ok = withContext(Dispatchers.IO) { RootFs.chmod(path, mode) }
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        message = if (ok) "已设为 $mode" else "改权限失败（文件可能在不允许写的挂载上）",
+                        isError = !ok,
+                    )
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /** 拼一个子路径，处理两边可能已经/没有带斜杠的情况。 */
+    private fun joinPath(dir: String, name: String): String =
+        (if (dir.endsWith("/")) dir else "$dir/") + name
 
     // ── 属性 / 摘要 / 改名 / 删除 ────────────────────────────────
 
