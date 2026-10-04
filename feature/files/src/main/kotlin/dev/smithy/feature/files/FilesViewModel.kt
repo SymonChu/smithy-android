@@ -84,6 +84,15 @@ data class FilesUiState(
 
     /** 预览计划（null = 没有可改的）。 */
     val renamePlan: RenamePlan? = null,
+
+    /**
+     * root 模式。
+     *
+     * 开着的时候浏览的是**整个文件系统**（系统分区、别的应用的数据、`/data/adb/modules`），
+     * 全部经 root shell；关着只能看应用私有目录。界面必须能一眼看出当前在哪种模式 ——
+     * 两种模式下同一个路径名的含义完全不同，看不出来就会改错东西。
+     */
+    val rootMode: Boolean = false,
 )
 
 /**
@@ -129,11 +138,17 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _state.update { it.copy(busy = "读取目录…", message = null, isError = false) }
             try {
-                val dir = File(path)
-                if (!dir.isDirectory) throw IllegalArgumentException("不是目录：$path")
                 val items = withContext(Dispatchers.IO) {
-                    dir.listFiles().orEmpty().map { f ->
-                        FsItem(f.name, f.absolutePath, f.isDirectory, f.length(), f.lastModified())
+                    // **两种访问方式在这里分流**：普通模式只能看应用私有目录，
+                    // root 模式看整个文件系统。别处的浏览逻辑（筛选/多选/排序）两者共用。
+                    if (_state.value.rootMode) {
+                        RootFs.list(path)
+                    } else {
+                        val dir = File(path)
+                        if (!dir.isDirectory) throw IllegalArgumentException("不是目录：$path")
+                        dir.listFiles().orEmpty().map { f ->
+                            FsItem(f.name, f.absolutePath, f.isDirectory, f.length(), f.lastModified())
+                        }
                     }.sortedWith(compareByDescending<FsItem> { it.dir }.thenBy { it.name.lowercase() })
                 }
                 _state.update { it.copy(dir = path, items = items, busy = null) }
@@ -143,9 +158,51 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 回上级。已经在根就什么都不做（不越出起始目录，免得用户迷路）。 */
+    /**
+     * 切换 root 模式。
+     *
+     * 切过去之前先**确认授权**（libsu 会弹对话框），拿不到就留在普通模式并说清原因 ——
+     * 而不是切过去、列出一个空目录，让人以为是自己路径写错了。
+     */
+    fun toggleRoot() {
+        val s = _state.value
+        if (s.rootMode) {
+            _state.update { it.copy(rootMode = false, message = "已回到普通模式（只能看应用私有目录）") }
+            openDir(rootDir.absolutePath)
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "请求 root…", message = null, isError = false) }
+            val granted = withContext(Dispatchers.IO) { RootFs.isGranted() }
+            if (!granted) {
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        isError = true,
+                        message = "没拿到 root 授权：设备没 root，或者刚才那个对话框被拒了",
+                    )
+                }
+                return@launch
+            }
+            _state.update {
+                it.copy(rootMode = true, busy = null, message = "root 模式：整个文件系统都能进")
+            }
+            openDir("/")
+        }
+    }
+
+    /** 回上级。普通模式不越出起始目录；root 模式到 `/` 为止。 */
     fun goUp() {
-        val current = File(_state.value.dir)
+        val s = _state.value
+        if (s.rootMode) {
+            if (s.dir == "/" || s.dir.isEmpty()) {
+                _state.update { it.copy(message = "已经到最上层了", isError = false) }
+                return
+            }
+            openDir(s.dir.trimEnd('/').substringBeforeLast('/', "").ifEmpty { "/" })
+            return
+        }
+        val current = File(s.dir)
         val parent = current.parentFile ?: return
         if (!parent.absolutePath.startsWith(rootDir.absolutePath)) {
             _state.update { it.copy(message = "已经到最上层了", isError = false) }

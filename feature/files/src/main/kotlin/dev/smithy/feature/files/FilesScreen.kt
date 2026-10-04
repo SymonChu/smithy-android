@@ -80,6 +80,7 @@ fun FilesScreen(
     onApplyRename: () -> Unit,
     onToggleSelected: (String) -> Unit,
     onImport: () -> Unit,
+    onToggleRoot: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -109,7 +110,7 @@ fun FilesScreen(
             // 并排比上下叠着更贴近它们的关系，而且互不遮挡 —— 改包时能一直看着文件列表
             Row(Modifier.weight(1f)) {
                 Column(Modifier.weight(1f)) {
-                    DirHeader(state.dir, relative, onGoUp)
+                    DirHeader(state.dir, relative, onGoUp, state.rootMode, onToggleRoot)
                     FilterRow(state.filter, onFilter, onImport)
                     SelectionBar(
                         state = state,
@@ -155,7 +156,7 @@ fun FilesScreen(
                 }
             }
         } else if (zip == null) {
-            DirHeader(state.dir, relative, onGoUp)
+            DirHeader(state.dir, relative, onGoUp, state.rootMode, onToggleRoot)
             FilterRow(state.filter, onFilter, onImport)
             SelectionBar(
                 state = state,
@@ -188,7 +189,13 @@ fun FilesScreen(
 private const val WIDE_DP = 600
 
 @Composable
-private fun DirHeader(dir: String, relative: (String) -> String, onGoUp: () -> Unit) {
+private fun DirHeader(
+    dir: String,
+    relative: (String) -> String,
+    onGoUp: () -> Unit,
+    rootMode: Boolean,
+    onToggleRoot: () -> Unit,
+) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -201,6 +208,12 @@ private fun DirHeader(dir: String, relative: (String) -> String, onGoUp: () -> U
                 fontFamily = FontFamily.Monospace,
                 modifier = Modifier.weight(1f),
             )
+            // root 开关放在路径右边：当前在哪种模式必须**一眼看到** ——
+            // 两种模式下同一个路径名含义不同（`/data` 在普通模式指应用自己的，
+            // 在 root 模式指系统那个），看不出来就会改错东西
+            TextButton(onClick = onToggleRoot) {
+                Text(if (rootMode) "root ●" else "普通")
+            }
         }
     }
 }

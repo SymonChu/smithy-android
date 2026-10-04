@@ -164,6 +164,7 @@ fun SmithyRoot(
                     onApplyRename = filesVm::applyRename,
                     onToggleSelected = filesVm::toggleSelected,
                     onImport = { pickImport.launch(arrayOf("*/*")) },
+                    onToggleRoot = filesVm::toggleRoot,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(

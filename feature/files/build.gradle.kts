@@ -26,6 +26,9 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
+    // libsu：root shell。系统分区、别的应用的数据、/data/adb/modules 都要靠它 ——
+    // 普通文件 API 只能看应用私有目录与用户授权的目录，有 root 也用不上。
+    implementation(libs.libsu)
     // AndroidViewModel / viewModelScope
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     // 代码编辑器（LGPL-2.1，以未修改库形式引用，许可页已声明）。
