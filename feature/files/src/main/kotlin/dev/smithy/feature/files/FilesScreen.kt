@@ -98,6 +98,11 @@ fun FilesScreen(
     onNewFolder: (String) -> Unit,
     onNewFile: (String) -> Unit,
     onChmod: (String, String) -> Unit,
+    onViewHex: (FsItem) -> Unit,
+    onHexClose: () -> Unit,
+    onHexGoto: (String) -> Unit,
+    onHexPage: (Int) -> Unit,
+    onHexSave: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
@@ -113,6 +118,20 @@ fun FilesScreen(
             text = state.editingText,
             onSave = onSaveText,
             onCancel = onCancelEdit,
+            modifier = modifier,
+        )
+        return
+    }
+
+    // 十六进制视图也占满整屏 —— 它看的是字节，旁边留一张文件列表没有意义，
+    // 而且那一列地址本身就够宽了
+    state.hex?.let { hex ->
+        HexScreen(
+            state = hex,
+            onClose = onHexClose,
+            onGoto = onHexGoto,
+            onPage = onHexPage,
+            onSave = onHexSave,
             modifier = modifier,
         )
         return
@@ -189,6 +208,7 @@ fun FilesScreen(
                         onRename = onRename,
                         onDelete = onDelete,
                         onToggleSelected = onToggleSelected,
+                        onViewHex = onViewHex,
                     )
                 }
                 VerticalDivider()
@@ -244,6 +264,7 @@ fun FilesScreen(
                 onRename = onRename,
                 onDelete = onDelete,
                 onToggleSelected = onToggleSelected,
+                onViewHex = onViewHex,
             )
         } else {
             ZipHeader(zip, state.busy)
@@ -432,6 +453,7 @@ private fun DirList(
     onRename: (FsItem, String) -> Unit,
     onDelete: (FsItem) -> Unit,
     onToggleSelected: (String) -> Unit,
+    onViewHex: (FsItem) -> Unit,
 ) {
     var menuFor by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<FsItem?>(null) }
@@ -496,6 +518,13 @@ private fun DirList(
                         text = { Text("改名") },
                         onClick = { menuFor = null; renaming = item },
                     )
+                    // 十六进制只对文件有意义（目录没有字节可看）
+                    if (!item.dir) {
+                        DropdownMenuItem(
+                            text = { Text("十六进制") },
+                            onClick = { menuFor = null; onViewHex(item) },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("删除") },
                         onClick = { menuFor = null; deleting = item },

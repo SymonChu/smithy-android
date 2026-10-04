@@ -178,6 +178,11 @@ fun SmithyRoot(
                     onNewFolder = filesVm::mkdir,
                     onNewFile = filesVm::touch,
                     onChmod = filesVm::chmod,
+                    onViewHex = { item -> filesVm.viewHex(item.path) },
+                    onHexClose = filesVm::hexClose,
+                    onHexGoto = filesVm::hexGoto,
+                    onHexPage = filesVm::hexPage,
+                    onHexSave = filesVm::hexSave,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(

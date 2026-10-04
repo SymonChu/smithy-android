@@ -125,6 +125,58 @@ object RootFs {
         if (parts.size < 3) null else Triple(parts[0], parts[1], parts[2])
     }.getOrNull()
 
+    /** 文件大小（字节）。不存在或读不到返回 null。 */
+    fun sizeOf(path: String): Long? = runCatching {
+        val r = Shell.cmd("stat -c '%s' ${q(path)} 2>/dev/null").exec()
+        r.out.firstOrNull()?.trim()?.toLongOrNull()
+    }.getOrNull()
+
+    /**
+     * 读文件的一段（从 [offset] 起 [length] 字节）。
+     *
+     * **必须经临时文件中转，不能让 `dd` 打到 stdout** —— libsu 的 `Result.out` 是
+     * 「按行拆好的字符串」，二进制经过它会被 `\n` 切碎、非 UTF-8 字节也会被替换掉。
+     * 十六进制编辑器读的正是二进制，这条路走不通会静默给出一堆坏字节。
+     *
+     * `bs=1` 才是按字节定位：dd 的 `skip` 以「块」为单位，块大小不是 1 的话
+     * 偏移会落在块边界上，改出来的位置就差了一截。
+     */
+    fun readWindow(path: String, offset: Long, length: Int): ByteArray? = runCatching {
+        if (offset < 0 || length <= 0) return null
+        val tmp = File.createTempFile("roothex", ".bin")
+        try {
+            Shell.cmd(
+                "dd if=${q(path)} of=${q(tmp.absolutePath)} bs=1 " +
+                    "skip=$offset count=$length 2>/dev/null",
+            ).exec()
+            tmp.readBytes()
+        } finally {
+            tmp.delete()
+        }
+    }.getOrNull()
+
+    /**
+     * 从 [offset] 起覆盖写入 [bytes]。
+     *
+     * `conv=notrunc` 是必须的：dd 默认写完就把目标**截断**到写入长度，
+     * 那会把文件后半截直接删掉。
+     *
+     * **长度不变** —— 这是调用方（十六进制编辑器）的约束，这里只负责写到那个位置。
+     */
+    fun writeAt(path: String, offset: Long, bytes: ByteArray): Boolean = runCatching {
+        if (offset < 0 || bytes.isEmpty()) return false
+        val tmp = File.createTempFile("roothex", ".bin")
+        try {
+            tmp.writeBytes(bytes)
+            Shell.cmd(
+                "dd if=${q(tmp.absolutePath)} of=${q(path)} bs=1 " +
+                    "seek=$offset conv=notrunc 2>&1",
+            ).exec().isSuccess
+        } finally {
+            tmp.delete()
+        }
+    }.getOrDefault(false)
+
     /** 在 shell 里安全引用一个路径（单引号包裹，内部的引号转义）。 */
     private fun q(s: String) = "'" + s.replace("'", "'\\''") + "'"
 }

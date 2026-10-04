@@ -9,6 +9,7 @@ import dev.smithy.fs.RenamePlan
 import dev.smithy.fs.planRename
 import dev.smithy.fs.ZipEntryInfo
 import dev.smithy.fs.Hashing
+import dev.smithy.fs.HexEdit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -89,8 +90,11 @@ data class FilesUiState(
     /** 编辑框里的内容（保存前的草稿）。 */
     val editingText: String = "",
 
-    /** 属性面板的数据（null = 没在显示）。 */
+    /** 属性 / 摘要面板的数据（null = 没在显示）。 */
     val properties: Properties? = null,
+
+    /** 十六进制查看状态（null = 没在看）。 */
+    val hex: HexState? = null,
 
     /** 是否处于多选状态。 */
     val selecting: Boolean = false,
@@ -152,6 +156,29 @@ data class Properties(
     val owner: String? = null,
     val group: String? = null,
 )
+
+/**
+ * 十六进制查看 / 编辑的状态。
+ *
+ * **只持有窗口，不持有整个文件** —— 被改的往往是几十上百 MB 的 apk / so，
+ * 整读进内存既慢又可能直接 OOM。所以按 [windowStart] 读一窗，翻页再读下一窗。
+ */
+data class HexState(
+    val path: String,
+    /** 文件总大小（用来显示「x / y」和判断有没有下一页）。 */
+    val size: Long,
+    val windowStart: Long,
+    val rows: List<HexEdit.Row>,
+) {
+    /** 这一窗覆盖到的末尾偏移（不含）。 */
+    val windowEnd: Long get() = windowStart + rows.sumOf { it.bytes.size.toLong() }
+
+    val hasPrev: Boolean get() = windowStart > 0
+    val hasNext: Boolean get() = windowEnd < size
+}
+
+/** 一窗读多少字节。4096 = 256 行十六进制，一屏翻几次就到底，也不至于读得太慢。 */
+private const val HEX_WINDOW = 4096
 
 /**
  * 文件管理 + zip 直改。
@@ -605,6 +632,142 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun dismissProperties() = _state.update { it.copy(properties = null) }
+
+    // ── 十六进制查看 / 编辑 ─────────────────────────────────────
+
+    /** 打开十六进制视图（从文件开头看起）。 */
+    fun viewHex(path: String) = loadWindow(path, 0, note = null)
+
+    fun hexClose() = _state.update { it.copy(hex = null) }
+
+    /** 跳到指定偏移。偏移按十六进制解析（见 [HexEdit.parseOffset]）。 */
+    fun hexGoto(offsetText: String) {
+        val s = _state.value.hex ?: return
+        val off = HexEdit.parseOffset(offsetText)
+        if (off == null) {
+            _state.update {
+                it.copy(message = "偏移按十六进制算，比如 1a2b 或 0x1a2b；十进制要写 0d100", isError = true)
+            }
+            return
+        }
+        if (off >= s.size) {
+            _state.update {
+                it.copy(message = "偏移 ${HexEdit.formatOffset(off)} 超出文件末尾（共 ${s.size} 字节）", isError = true)
+            }
+            return
+        }
+        loadWindow(s.path, off, note = null)
+    }
+
+    /** 翻页。[delta] 为 -1 / +1。 */
+    fun hexPage(delta: Int) {
+        val s = _state.value.hex ?: return
+        val target = s.windowStart + delta.toLong() * HEX_WINDOW
+        if (target < 0 || target >= s.size) return
+        loadWindow(s.path, target, note = null)
+    }
+
+    /**
+     * 在 [offsetText] 处覆盖写入 [hexText]。
+     *
+     * 写完之后**重新从磁盘读那一窗**再显示，而不是就地改内存里的那份副本：
+     * 磁盘才是事实。就地改的话，写失败（挂载只读、权限不够）时界面也照样显示
+     * 「改好了」—— 而用户会带着这个错误认知去装机。
+     */
+    fun hexSave(offsetText: String, hexText: String) {
+        val s = _state.value.hex ?: return
+        val off = HexEdit.parseOffset(offsetText)
+        if (off == null) {
+            _state.update { it.copy(message = "偏移要写成十六进制，比如 1a2b", isError = true) }
+            return
+        }
+        val patch = HexEdit.parseBytes(hexText)
+        if (patch == null) {
+            _state.update {
+                it.copy(message = "要写的字节写成两位一组，比如 90 90 或 9090（不补零）", isError = true)
+            }
+            return
+        }
+        // 等长覆盖才允许：写到文件末尾之外会撑大文件，而变长会移动后面所有字节
+        if (off + patch.size > s.size) {
+            _state.update {
+                it.copy(
+                    message = "写到文件外面去了：偏移 ${HexEdit.formatOffset(off)} + ${patch.size} 字节 > 共 ${s.size} 字节。这里只做等长覆盖",
+                    isError = true,
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "写入…", message = null, isError = false) }
+            try {
+                val root = _state.value.rootMode
+                val ok = withContext(Dispatchers.IO) { FileWindow.write(s.path, off, patch, root) }
+                if (!ok) {
+                    _state.update {
+                        it.copy(
+                            busy = null,
+                            message = "写入失败。root 模式下文件可能在不允许写的挂载上（需要先 remount 成可写）",
+                            isError = true,
+                        )
+                    }
+                    return@launch
+                }
+                loadWindow(
+                    path = s.path,
+                    start = s.windowStart,
+                    note = "已写入 ${patch.size} 字节 @ ${HexEdit.formatOffset(off)}",
+                )
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /**
+     * 读一窗并渲染。
+     *
+     * [note] 非 null 时会显示在消息栏 —— 用它把「写入了什么」明确说出来，
+     * 而不是让界面悄悄变一下、由用户自己去发现哪几个字节变了。
+     */
+    private fun loadWindow(path: String, start: Long, note: String?) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "读文件…", message = note, isError = false) }
+            try {
+                val root = _state.value.rootMode
+                val data = withContext(Dispatchers.IO) {
+                    val size = FileWindow.size(path, root)
+                    val bytes = if (start == 0L) {
+                        FileWindow.read(path, 0, HEX_WINDOW, root)
+                    } else {
+                        FileWindow.read(path, start, HEX_WINDOW, root)
+                    }
+                    Triple(size, bytes, start)
+                }
+                val (size, bytes, from) = data
+                if (bytes == null) {
+                    _state.update {
+                        it.copy(busy = null, message = "读不到 $path 的内容", isError = true)
+                    }
+                    return@launch
+                }
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        hex = HexState(
+                            path = path,
+                            size = size ?: (from + bytes.size),
+                            windowStart = from,
+                            rows = HexEdit.rows(bytes, from),
+                        ),
+                    )
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
 
     // ── 多选与批量改名 ────────────────────────────────────────
 
