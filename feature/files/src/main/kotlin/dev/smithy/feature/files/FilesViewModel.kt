@@ -156,7 +156,34 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onFilter(text: String) = _state.update { it.copy(filter = text) }
 
-    // ── 属性 / 摘要 / 改名 / 删除 ───────────────────────────────
+    // ── 属性 / 摘要 / 改名 / 删除 ────────────────────────────────
+
+    /**
+     * 从系统选择器挑的文件导入到私有目录。
+     *
+     * 这是「改别人给我的包」的入口：应用私有目录里不会凭空出现用户的 apk，
+     * 而真实场景要改的包基本都在别处（下载目录、聊天软件收下来的文件）。
+     */
+    fun importFromUri(uri: android.net.Uri) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "导入…", message = null, isError = false) }
+            try {
+                val dest = withContext(Dispatchers.IO) {
+                    FileImporter.import(
+                        getApplication(),
+                        uri,
+                        getApplication<Application>().cacheDir,
+                    )
+                }
+                _state.update {
+                    it.copy(busy = null, message = "已导入 ${dest.name}", isError = false)
+                }
+                openDir(rootDir.absolutePath)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
 
     fun showProperties(item: FsItem) {
         viewModelScope.launch {

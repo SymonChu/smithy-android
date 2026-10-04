@@ -73,6 +73,13 @@ fun SmithyRoot() {
         ActivityResultContracts.OpenDocument(),
     ) { uri -> if (uri != null) chatVm.attachApk(uri) }
 
+    // 从设备任意位置导入要改的包 —— 私有目录里不会凭空出现用户的 apk，
+    // 而真实场景要改的包基本都在别处（下载目录、聊天软件收下来的文件）。
+    // 不限 mime：apk 各家 ROM 报的类型不一致，限了反而选不中
+    val pickImport = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> if (uri != null) filesVm.importFromUri(uri) }
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -117,6 +124,7 @@ fun SmithyRoot() {
                     onRulesChange = filesVm::onRulesChange,
                     onApplyRename = filesVm::applyRename,
                     onToggleSelected = filesVm::toggleSelected,
+                    onImport = { pickImport.launch(arrayOf("*/*")) },
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen()

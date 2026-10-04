@@ -79,6 +79,7 @@ fun FilesScreen(
     onRulesChange: (RenameRules) -> Unit,
     onApplyRename: () -> Unit,
     onToggleSelected: (String) -> Unit,
+    onImport: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -109,7 +110,7 @@ fun FilesScreen(
             Row(Modifier.weight(1f)) {
                 Column(Modifier.weight(1f)) {
                     DirHeader(state.dir, relative, onGoUp)
-                    FilterRow(state.filter, onFilter)
+                    FilterRow(state.filter, onFilter, onImport)
                     SelectionBar(
                         state = state,
                         onToggleSelecting = onToggleSelecting,
@@ -155,7 +156,7 @@ fun FilesScreen(
             }
         } else if (zip == null) {
             DirHeader(state.dir, relative, onGoUp)
-            FilterRow(state.filter, onFilter)
+            FilterRow(state.filter, onFilter, onImport)
             SelectionBar(
                 state = state,
                 onToggleSelecting = onToggleSelecting,
@@ -205,14 +206,23 @@ private fun DirHeader(dir: String, relative: (String) -> String, onGoUp: () -> U
 }
 
 @Composable
-private fun FilterRow(filter: String, onFilter: (String) -> Unit) {
-    OutlinedTextField(
-        value = filter,
-        onValueChange = onFilter,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-        singleLine = true,
-        placeholder = { Text("按名字过滤") },
-    )
+private fun FilterRow(filter: String, onFilter: (String) -> Unit, onImport: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = filter,
+            onValueChange = onFilter,
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            placeholder = { Text("筛选名字") },
+        )
+        // 「导入」放这里而不是标题栏：它和「筛选」一样是「对当前这一屏做的事」，
+        // 而标题栏那排已经被导航按钮占满了
+        Spacer(Modifier.width(8.dp))
+        Button(onClick = onImport) { Text("导入") }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
