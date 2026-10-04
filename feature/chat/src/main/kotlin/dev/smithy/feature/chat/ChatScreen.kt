@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
@@ -50,6 +51,7 @@ fun ChatScreen(
     onInput: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onAttach: () -> Unit,
     onClear: () -> Unit,
     onConfirm: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -62,7 +64,7 @@ fun ChatScreen(
     }
 
     Column(modifier.fillMaxSize().imePadding()) {
-        TopBar(workspaceName, state.running, onClear)
+        TopBar(workspaceName, state.running, state.trustWrites, onAttach, onClear)
 
         if (state.items.isEmpty()) {
             EmptyHint(workspaceName != null)
@@ -83,6 +85,22 @@ fun ChatScreen(
             ConfirmBar(request.toolName, request.summary, destructive, onConfirm)
         }
 
+        (state.message ?: state.busy)?.let { text ->
+            Surface(
+                color = if (state.isError) {
+                    MaterialTheme.colorScheme.errorContainer
+                } else {
+                    MaterialTheme.colorScheme.secondaryContainer
+                },
+            ) {
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth().padding(10.dp),
+                )
+            }
+        }
+
         state.configProblem?.let {
             Surface(color = MaterialTheme.colorScheme.errorContainer) {
                 Text(
@@ -98,7 +116,13 @@ fun ChatScreen(
 }
 
 @Composable
-private fun TopBar(workspaceName: String?, running: Boolean, onClear: () -> Unit) {
+private fun TopBar(
+    workspaceName: String?,
+    running: Boolean,
+    trustWrites: Boolean,
+    onAttach: () -> Unit,
+    onClear: () -> Unit,
+) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -107,12 +131,15 @@ private fun TopBar(workspaceName: String?, running: Boolean, onClear: () -> Unit
             Column(Modifier.weight(1f)) {
                 Text("对话", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    workspaceName?.let { "正在操作：$it" } ?: "没有打开包（先去工作台选一个）",
+                    buildString {
+                        append(workspaceName?.let { "正在操作：$it" } ?: "没有打开包（先去工作台选一个）")
+                        if (trustWrites) append("　·　信任模式：写入不问")
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (workspaceName != null) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.error
+                    color = when {
+                        workspaceName == null -> MaterialTheme.colorScheme.error
+                        trustWrites -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
             }
@@ -120,6 +147,7 @@ private fun TopBar(workspaceName: String?, running: Boolean, onClear: () -> Unit
                 CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(10.dp))
             }
+            TextButton(onClick = onAttach) { Text(if (workspaceName == null) "选包" else "换包") }
             TextButton(onClick = onClear) { Text("清空") }
         }
     }
@@ -171,18 +199,43 @@ private fun UserBubble(text: String) {
     }
 }
 
+/** 助手回答超过这么多行就默认折叠。 */
+private const val COLLAPSE_LINES = 8
+
 @Composable
 private fun AssistantBubble(item: ChatItem.Assistant) {
+    var expanded by remember { mutableStateOf(false) }
+    val lines = item.text.count { it == '\n' } + 1
+
+    // 流式输出期间不折叠：一边出字一边变矮会很跳，读起来难受
+    val collapsible = !item.streaming && lines > COLLAPSE_LINES
+
     Surface(
         color = MaterialTheme.colorScheme.surface,
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(Modifier.padding(10.dp)) {
-            Text(item.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            if (item.streaming) {
-                Spacer(Modifier.width(6.dp))
-                CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
+        Column(Modifier.padding(10.dp)) {
+            Row {
+                Text(
+                    item.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = if (collapsible && !expanded) COLLAPSE_LINES else Int.MAX_VALUE,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (item.streaming) {
+                    Spacer(Modifier.width(6.dp))
+                    CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
+                }
+            }
+            if (collapsible) {
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(
+                        if (expanded) "收起" else "展开全部（$lines 行）",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
             }
         }
     }
@@ -235,6 +288,26 @@ private fun ToolCard(item: ChatItem.Tool) {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
+            }
+
+            // 改动明细：逐行上色，让「动了哪个文件」一眼能扫出来。
+            // 这是「AI 改了什么，用户看得见」的落点，也是决定要不要回退的依据 ——
+            // 它来自真实的改动记录（与「改动」标签页是同一批），所以两处不会对不上
+            item.diff?.takeIf { it.isNotBlank() }?.let { diff ->
+                Spacer(Modifier.height(6.dp))
+                diff.lineSequence().forEach { line ->
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = when {
+                            line.startsWith("＋") -> MaterialTheme.colorScheme.primary
+                            line.startsWith("－") -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = if (expanded) 60 else 4,
+                    )
+                }
             }
             if (expanded) {
                 Spacer(Modifier.height(6.dp))

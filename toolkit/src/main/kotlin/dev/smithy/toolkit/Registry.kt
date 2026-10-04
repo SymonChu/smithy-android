@@ -77,6 +77,35 @@ class DefaultToolRegistry(
     }
 
     /**
+     * 从改动记录里算出「这次调用改了什么」。
+     *
+     * 按 id 集合做差：新增的是本次改动，消失的是被回退掉的。返回 null = 确实没改动
+     * （只读工具，或者工具跑完了但什么也没改）。
+     *
+     * 界面拿它显示给用户 —— 这是「AI 改了什么，用户能看到同样的记录」的落点。
+     * 手动操作走的也是同一批 `PatchRecord`，所以两边的显示天然一致，
+     * 不会出现「AI 说改了三处、实际只改了一处」这种对不上的情况。
+     */
+    private suspend fun diffOf(ctx: ToolContext, beforeIds: Set<String>?): String? {
+        val before = beforeIds ?: return null
+        val project = ctx.workspace ?: return null
+        val after = runCatching { project.patches() }.getOrNull() ?: return null
+
+        val afterIds = after.map { it.id }.toSet()
+        val added = after.filter { it.id !in before }
+        val reverted = (before - afterIds).size
+
+        return buildString {
+            added.forEach { record ->
+                append("＋ ").append(record.target)
+                record.note?.takeIf { it.isNotBlank() }?.let { append("　").append(it) }
+                append('\n')
+            }
+            if (reverted > 0) append("－ 回退了 $reverted 条改动\n")
+        }.trimEnd().ifBlank { null }
+    }
+
+    /**
      * 工具目录（塞进提示词，让模型知道自己有哪些工具）。
      *
      * 每行只取**第一句**，不是第一行：description 里常常是拼接出来的一整段长文本，
@@ -114,9 +143,15 @@ class DefaultToolRegistry(
             }
         }
 
+        // 记下调用前的改动集合，返回前比对。这样 28 个工具都不必自己报「我改了什么」，
+        // 而且拿到的是**真实落下的改动记录** —— 工具有时会「以为改了」：
+        // 引擎拒绝、命中 0 处都照样返回正常结果，自报就会骗人
+        val beforeIds = runCatching { ctx.workspace?.patches()?.map { it.id }?.toSet() }.getOrNull()
+
         // 工具实现里不写 try/catch —— 到这里统一翻译成人话 + 下一步建议
         return try {
-            tool.invoke(ctx, args)
+            val result = tool.invoke(ctx, args)
+            result.copy(diff = diffOf(ctx, beforeIds))
         } catch (e: BadArgs) {
             Results.fail("BAD_ARGS", e.message.orEmpty(), e.hint)
         } catch (e: NoWorkspaceException) {

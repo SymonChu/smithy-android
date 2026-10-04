@@ -11,6 +11,8 @@ import dev.smithy.ai.ChatMessage
 import dev.smithy.ai.DEFAULT_SYSTEM_PROMPT
 import dev.smithy.ai.OpenAiClient
 import dev.smithy.ai.SessionStore
+import dev.smithy.engine.ApkProjects
+import dev.smithy.toolkit.ConfirmPolicy
 import dev.smithy.toolkit.ConfirmRequest
 import dev.smithy.toolkit.Effect
 import dev.smithy.toolkit.NoWorkspaceException
@@ -18,12 +20,15 @@ import dev.smithy.toolkit.ToolContext
 import dev.smithy.toolkit.WorkspaceHolder
 import dev.smithy.toolkit.defaultRegistry
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 // ─────────────────────────────────────────────────────────────
 // 对话里的一条条目
@@ -50,6 +55,8 @@ sealed interface ChatItem {
         val args: String,
         val state: State,
         val summary: String? = null,
+        /** 这次调用**实际改了什么**（来自改动记录）。只读工具为 null */
+        val diff: String? = null,
     ) : ChatItem {
         enum class State { RUNNING, OK, FAILED }
     }
@@ -77,6 +84,16 @@ data class ChatUiState(
     val configProblem: String? = null,
     /** 当前工作区名字（null = 没打开包） */
     val workspaceName: String? = null,
+
+    /** 信任模式：开着的话 WRITE 级工具不再逐条问（DESTRUCTIVE 仍然问） */
+    val trustWrites: Boolean = false,
+
+    /** 正在忙什么（打开包之类的即时动作），null = 空闲 */
+    val busy: String? = null,
+
+    /** 一次性提示（成功也用它，不只报错） */
+    val message: String? = null,
+    val isError: Boolean = false,
     /** 正在等用户点的确认（null = 没有） */
     val pendingConfirm: ConfirmRequest? = null,
 )
@@ -93,7 +110,14 @@ data class ChatUiState(
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val configStore = AiConfigStore(app)
-    private val registry = defaultRegistry()
+
+    /**
+     * 工具注册表。
+     *
+     * **信任模式切换时要重建**：策略是构造参数（`ConfirmPolicy`），不能就地改 ——
+     * 一份策略只有一个来源，才不会出现「界面显示已信任、实际还在问」这种不一致。
+     */
+    private var registry = defaultRegistry(ConfirmPolicy(configStore.trustWrites()))
 
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
@@ -127,7 +151,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     init {
         val cfg = configStore.load()
         _state.update {
-            it.copy(config = cfg, configProblem = configStore.validate(cfg), workspaceName = WorkspaceHolder.currentName)
+            it.copy(
+                config = cfg,
+                configProblem = configStore.validate(cfg),
+                workspaceName = WorkspaceHolder.currentName,
+                trustWrites = configStore.trustWrites(),
+            )
         }
         // 恢复上次的会话：改包常要来回十几轮，中途被系统杀掉不该丢掉「改到哪了」
         viewModelScope.launch {
@@ -196,6 +225,70 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         configStore.save(config)
         _state.update { it.copy(config = config, configProblem = configStore.validate(config)) }
     }
+
+    /**
+     * 切换信任模式：开着的话 WRITE 级工具不再逐条问（DESTRUCTIVE 仍然问）。
+     *
+     * 重建注册表而不是就地改它的策略字段 —— 策略是构造参数，一份策略只有一个来源，
+     * 否则迟早出现「界面显示已信任、实际还在逐条问」这种说不清的状态。
+     *
+     * 切换**不影响正在跑的那一轮**（它已经拿到旧的 registry 引用）。这反而更安全：
+     * 半路换策略会让「这一轮里哪些问了、哪些没问」变得没法解释。
+     */
+    fun setTrustWrites(value: Boolean) {
+        configStore.setTrustWrites(value)
+        registry = defaultRegistry(ConfirmPolicy(value))
+        _state.update { it.copy(trustWrites = value) }
+    }
+
+    /**
+     * 在对话里直接打开一个 APK 作为工作区，不用先去「工作台」标签。
+     *
+     * 打开后**替换**掉 `WorkspaceHolder` 里原来那个：两个工程同时开着的话，
+     * 「工具到底作用于哪个」是说不清的，而用户默认以为是刚打开的这个。
+     * 所以先关掉旧的（保留它的产物，用户可能还要用）。
+     *
+     * 文件先复制到缓存目录再开：内容提供者给的 URI 不保证能被反复随机读，
+     * 而引擎要多次 seek 那个 zip。
+     */
+    fun attachApk(uri: android.net.Uri) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "打开 APK…", message = null, isError = false) }
+            try {
+                val app = getApplication<Application>()
+                val file = withContext(Dispatchers.IO) {
+                    val rawName = uri.lastPathSegment?.substringAfterLast('/').orEmpty()
+                    val name = rawName.ifBlank { "attached.apk" }
+                    val dest = File(app.cacheDir, "chat-attach-$name")
+                    app.contentResolver.openInputStream(uri)?.use { ins ->
+                        dest.outputStream().use { ins.copyTo(it) }
+                    } ?: throw IllegalArgumentException("读不到这个文件")
+                    dest
+                }
+
+                // 换包之前把旧的关掉 —— 免得两个工程同时活着，改到不该改的那个
+                WorkspaceHolder.current?.let { old ->
+                    runCatching { old.close(keepArtifacts = true) }
+                }
+
+                val project = ApkProjects.open(file)
+                WorkspaceHolder.set(project, file.name)
+                _state.update { s ->
+                    s.copy(
+                        busy = null,
+                        workspaceName = file.name,
+                        message = "已打开「${file.name}」，可以让我改它了",
+                        isError = false,
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(busy = null, message = t.message ?: "打不开这个文件", isError = true) }
+            }
+        }
+    }
+
+    /** 一次性提示看过了。 */
+    fun clearMessage() = _state.update { it.copy(message = null) }
 
     // ── 发送 / 停止 ─────────────────────────────────────────────
 
@@ -342,6 +435,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val updated = old.copy(
                 state = if (event.ok) ChatItem.Tool.State.OK else ChatItem.Tool.State.FAILED,
                 summary = event.summary,
+                diff = event.diff,
             )
             s.copy(items = s.items.toMutableList().also { it[idx] = updated })
         }

@@ -87,6 +87,7 @@ class AgentLoop(
                         name = call.function.name,
                         ok = result.ok,
                         summary = brief(result),
+                        diff = result.diff,
                     ),
                 )
                 messages += ChatMessage.tool(call.id, encodeForModel(result))
@@ -159,7 +160,19 @@ sealed interface AgentEvent {
 
     data class ToolStarted(val name: String, val argsPreview: String) : AgentEvent
 
-    data class ToolFinished(val name: String, val ok: Boolean, val summary: String) : AgentEvent
+    /**
+     * 一次工具调用结束。
+     *
+     * [diff] 是这次调用**实际改动**了什么（来自改动记录，不是工具自报）。
+     * 只用于界面展示，不给模型看 —— 模型那边有工具返回的 text 就够，
+     * 多塞一份反而占上下文。
+     */
+    data class ToolFinished(
+        val name: String,
+        val ok: Boolean,
+        val summary: String,
+        val diff: String? = null,
+    ) : AgentEvent
 
     /**
      * 一轮对话结束。

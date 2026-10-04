@@ -67,6 +67,12 @@ fun SmithyRoot() {
         ActivityResultContracts.CreateDocument("application/octet-stream"),
     ) { uri -> if (uri != null) filesVm.saveZipToUri(uri) }
 
+    // 对话里直接选包，不用先去「工作台」标签。
+    // 不限 mime 类型：apk 的 mime 各家 ROM 报得不一样，限了就选不中
+    val pickApkForChat = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> if (uri != null) chatVm.attachApk(uri) }
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -111,6 +117,7 @@ fun SmithyRoot() {
                         onInput = chatVm::onInput,
                         onSend = chatVm::send,
                         onStop = chatVm::stop,
+                        onAttach = { pickApkForChat.launch(arrayOf("*/*")) },
                         onClear = chatVm::clear,
                         onConfirm = chatVm::answerConfirm,
                     )
@@ -119,7 +126,9 @@ fun SmithyRoot() {
                 Tab.Settings -> ChatSettingsScreen(
                     config = chatState.config,
                     problem = chatState.configProblem,
+                    trustWrites = chatState.trustWrites,
                     onConfigChange = chatVm::onConfigChange,
+                    onTrustWritesChange = chatVm::setTrustWrites,
                 )
             }
         }

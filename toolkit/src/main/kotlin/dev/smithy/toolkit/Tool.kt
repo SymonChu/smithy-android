@@ -49,6 +49,15 @@ data class ToolResult(
     val error: ToolError? = null,
     val truncated: Boolean = false,    // 超出输出预算被截断
     val artifactPath: String? = null,  // 被截断的完整内容写到了哪个文件
+
+    /**
+     * 这次调用**实际改动了什么**（给人看的，例如「classes2.dex 替换 6 处」）。
+     *
+     * 由注册表从**改动记录**生成，不是工具自报：自报的话 28 个工具都要写一遍，
+     * 而且「工具声称改了」与「真的落了改动」会有出入。取真实记录天然一致。
+     * 只读工具为 null。**模型看不到这个字段**（它只用于界面展示）。
+     */
+    val diff: String? = null,
 )
 
 @Serializable

@@ -38,6 +38,20 @@ class AiConfigStore(context: Context) {
     }
 
     /**
+     * 信任模式：开启后 WRITE 级工具不再逐条问，**DESTRUCTIVE 仍然要确认**。
+     *
+     * 单独存取而不是塞进 [AiConfig]：那是「模型怎么连」的配置，这是「工具要不要问」的
+     * 安全策略 —— 混在一起的话，导出一份模型配置会把安全设置一并带出去。
+     *
+     * **默认关闭**：新用户对「AI 直接改包」应该有戒心，主动开启才算知情。
+     */
+    fun trustWrites(): Boolean = prefs.getBoolean(KEY_TRUST, false)
+
+    fun setTrustWrites(value: Boolean) {
+        prefs.edit().putBoolean(KEY_TRUST, value).apply()
+    }
+
+    /**
      * 配置是否可用。
      *
      * 缺 key 时**直接告诉用户缺什么**，而不是发一个请求再翻译 401 ——
@@ -55,5 +69,6 @@ class AiConfigStore(context: Context) {
         const val KEY_BASE = "baseUrl"
         const val KEY_KEY = "apiKey"
         const val KEY_MODEL = "model"
+        const val KEY_TRUST = "trustWrites"
     }
 }
