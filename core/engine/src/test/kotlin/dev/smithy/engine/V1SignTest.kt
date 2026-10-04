@@ -6,7 +6,9 @@ import dev.smithy.engine.internal.V1Signer
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
+import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -148,6 +150,57 @@ class V1SignTest {
         )
         r.errors.forEach { println("   错误：$it") }
         assertTrue(r.isVerifiedUsingV2Scheme, "v2 应该在（错误：${r.errors}）")
+    }
+
+    /**
+     * 扫原始字节，拿每个条目的数据起点。
+     *
+     * `java.util.zip.ZipEntry` 的 `headerOffset` 是 JDK 内部子类才有的，公开 API 拿不到，
+     * 所以自己从偏移 0 开始顺序走 local header。**顺序走是可靠的**：每个条目都能从数据
+     * 起点按尺寸直接跳到下一个头，不会在压缩数据里误撞上头签名。
+     */
+    private fun dataStarts(apk: File): Map<String, Long> {
+        val b = apk.readBytes()
+        val out = LinkedHashMap<String, Long>()
+        var i = 0L
+        while (i + 30 <= b.size) {
+            val p = i.toInt()
+            val isHeader = b[p] == 0x50.toByte() && b[p + 1] == 0x4B.toByte() &&
+                b[p + 2] == 0x03.toByte() && b[p + 3] == 0x04.toByte()
+            if (!isHeader) break
+            val nameLen = (b[p + 26].toInt() and 0xFF) or ((b[p + 27].toInt() and 0xFF) shl 8)
+            val extraLen = (b[p + 28].toInt() and 0xFF) or ((b[p + 29].toInt() and 0xFF) shl 8)
+            val compSize = (0 until 4).fold(0L) { acc, k ->
+                acc or ((b[p + 18 + k].toLong() and 0xFF) shl (8 * k))
+            }
+            val name = String(b, p + 30, nameLen, Charsets.UTF_8)
+            val dataStart = i + 30 + nameLen + extraLen
+            out[name] = dataStart
+            if (compSize == 0L) break          // 没压缩尺寸（data descriptor）就不敢跳
+            i = dataStart + compSize
+        }
+        return out
+    }
+
+    @Test
+    fun `v1 签名之后 so 的 16KB 对齐没丢`() {
+        val sample = requireSample()
+        val m = material()
+        val out = File("/tmp/smithy-v1-align.apk").apply { delete() }
+        V1Signer.sign(sample, out, m.privateKey, m.certificates)
+
+        // 这条是真机上踩过**两次**的坑：重写 zip 时丢掉 .so 的页对齐，装机报
+        // Failed to extract native libraries, res=-2 —— 而报错完全不提 zip。
+        val starts = dataStarts(out)
+        val libs = starts.filterKeys { it.startsWith("lib/") && it.endsWith(".so") }
+        libs.forEach { (name, at) ->
+            assertEquals(0L, at % 16384L, "$name 的数据起点 $at 没有 16KB 对齐")
+        }
+        println("── 检查了 ${libs.size} 个 .so 的对齐")
+        assertTrue(libs.isNotEmpty(), "样本里应该有 .so")
+
+        val arsc = starts["resources.arsc"]
+        assertTrue(arsc != null && arsc % 4L == 0L, "resources.arsc 必须 4 字节对齐，实际 $arsc")
     }
 
     @Test

@@ -211,6 +211,90 @@ internal object ZipRebuilder {
         return Stats(copied, recompressed, deletedCount, fellBackToFull = false)
     }
 
+    /**
+     * 原样搬运 + 追加新条目，**全程保持对齐**。
+     *
+     * 给 v1 签名用：签名文件是新增的，而重写 zip 时一旦丢掉 `.so` 的 16KB 对齐，真机就报
+     * `Failed to extract native libraries, res=-2` —— 那个报错完全指不到 zip 层。
+     *
+     * 刻意复用增量路径那套写法（手写 local header + 对齐填充），而不是再开一条
+     * `ZipOutputStream` 的路：对齐原先只在一条路上有，别的路都没有 —— 这就是那个坑，
+     * 真机上踩了两次。
+     *
+     * @param drop 要从包里去掉的条目（旧的签名文件）
+     * @param additions 新条目：名字 → 内容
+     */
+    fun rewriteAligned(
+        source: File,
+        outFile: File,
+        drop: Set<String>,
+        additions: Map<String, ByteArray>,
+    ): Stats {
+        var copied = 0
+        var deletedCount = 0
+        val entries = RandomAccessFile(source, "r").use { readCentralDirectory(it) }
+        val raf = RandomAccessFile(source, "r")
+        try {
+            FileOutputStream(outFile).use { fos ->
+                val counter = CountingOutputStream(BufferedOutputStream(fos, 1 shl 16))
+                val written = ArrayList<Written>(entries.size + additions.size)
+
+                for (e in entries) {
+                    if (e.name in drop) {
+                        deletedCount++
+                        continue
+                    }
+                    val nameBytes = e.name.toByteArray(Charsets.UTF_8)
+                    val offset = counter.count
+                    val dataStart = localDataOffset(raf, e.localOffset)
+                    val extra = alignExtra(e.extra, offset, nameBytes.size, e.method, e.name)
+                    val header = localHeader(
+                        e.versionNeeded, 0, e.method, e.time, e.date,
+                        e.crc, e.compressedSize, e.size, nameBytes, extra,
+                    )
+                    counter.write(header)
+                    counter.write(nameBytes)
+                    counter.write(extra)   // 必须真的写出去：header 里声明了它的长度
+                    raf.seek(dataStart)
+                    copyRange(raf, counter, e.compressedSize)
+                    written += Written.of(e, nameBytes, extra, offset, e.method, e.crc, e.compressedSize, e.size)
+                    copied++
+                }
+
+                additions.forEach { (name, bytes) ->
+                    val nameBytes = name.toByteArray(Charsets.UTF_8)
+                    val offset = counter.count
+                    // 签名文件与 .so 都必须 STORED：它们会被直接读 / mmap
+                    val stored = ZipAlignment.needsStored(name)
+                    val method = if (stored) METHOD_STORED else METHOD_DEFLATED
+                    val payload = if (stored) bytes else deflate(bytes)
+                    val crc = crc32(bytes)
+                    val extra = alignExtra(ByteArray(0), offset, nameBytes.size, method, name)
+                    val header = localHeader(
+                        20, 0, method, 0, 0,
+                        crc, payload.size.toLong(), bytes.size.toLong(), nameBytes, extra,
+                    )
+                    counter.write(header)
+                    counter.write(nameBytes)
+                    counter.write(extra)
+                    counter.write(payload)
+                    written += Written(
+                        nameBytes = nameBytes, method = method, time = 0, date = 0,
+                        crc = crc, compressedSize = payload.size.toLong(), size = bytes.size.toLong(),
+                        localOffset = offset, extra = extra, comment = ByteArray(0),
+                        versionMadeBy = 20, versionNeeded = 20, internalAttrs = 0, externalAttrs = 0L,
+                    )
+                }
+
+                writeCentralDirectory(counter, written, cdOffset = counter.count)
+                counter.flush()
+            }
+        } finally {
+            raf.close()
+        }
+        return Stats(copied, additions.size, deletedCount, fellBackToFull = false)
+    }
+
     // ── zip 结构 ──────────────────────────────────────────────
 
     private data class Entry(

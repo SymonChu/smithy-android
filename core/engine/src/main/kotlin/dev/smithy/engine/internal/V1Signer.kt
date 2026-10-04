@@ -112,37 +112,28 @@ internal object V1Signer {
 
         val rsa = Pkcs7.generate(sf, privateKey, certificates)
 
-        // 第二遍：条目原样搬运，再把三个签名文件写进去
-        val out = ZipOutputStream(output.outputStream().buffered(1 shl 16))
-        try {
-            ZipFile(input).use { zip ->
-                val entries = zip.entries()
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-                    if (isSignatureFile(entry.name)) continue   // 旧的签名文件丢掉
-                    val copy = ZipEntry(entry.name).apply {
-                        method = entry.method
-                        time = entry.time
-                        if (entry.method == ZipEntry.STORED) {
-                            // STORED 条目必须自带尺寸与校验和，否则 ZipOutputStream 直接抛
-                            // 「STORED entry missing size, compressed size, or crc-32」。
-                            // .so 与 resources.arsc 都是 STORED，必然踩中。
-                            size = entry.size
-                            compressedSize = entry.size
-                            crc = entry.crc
-                        }
-                    }
-                    out.putNextEntry(copy)
-                    zip.getInputStream(entry).use { it.copyTo(out) }
-                    out.closeEntry()
-                }
-            }
-            putStored(out, MANIFEST_NAME, manifest)
-            putStored(out, SF_NAME, sf)
-            putStored(out, RSA_NAME, rsa)
-        } finally {
-            out.close()
+        // 第二遍：原样搬条目 + 追加三个签名文件。
+        //
+        // **必须走 ZipRebuilder.rewriteAligned，不能用 ZipOutputStream**：
+        // 后者不给控制本地头偏移的机会，`.so` 的 16KB 页对齐会丢 —— 真机报
+        // `Failed to extract native libraries, res=-2`，而那个报错并不提 zip 层。
+        // 这里原先就是自己写的 ZipOutputStream，正是这么踩进去的（真机踩了两次）。
+        val drop = ZipFile(input).use { zip ->
+            zip.entries().asSequence()
+                .map { it.name }
+                .filter { isSignatureFile(it) }
+                .toSet()
         }
+        ZipRebuilder.rewriteAligned(
+            source = input,
+            outFile = output,
+            drop = drop,
+            additions = linkedMapOf(
+                MANIFEST_NAME to manifest,
+                SF_NAME to sf,
+                RSA_NAME to rsa,
+            ),
+        )
         return output
     }
 
