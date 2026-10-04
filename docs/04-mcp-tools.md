@@ -40,8 +40,8 @@
 | `arsc.list` | R | workspaceId, type?, filter? | 资源表条目。filter 同时匹配资源名与值 |
 | `arsc.set` | W | workspaceId, resName, value | 单条修改，如 `@string/app_name` |
 | `arsc.replace_string` | W | workspaceId, pairs[], scope? | 批量文案替换。**scope 缺省 ARSC**（只改资源表，实测 200 组 300ms）；把 dex 也算上的 BOTH 要 27 秒，见 `docs/08` 第十节 |
-| `axml.decode` | R | workspaceId, path | 二进制 XML → 可读 |
-| `axml.patch` | W | workspaceId, path, target, attr, value | 改属性（如 debuggable、exported） |
+| `axml.decode` | R | workspaceId, path | 二进制 XML → 可读文本（清单与布局都能解） |
+| `axml.patch` | W | workspaceId, path, elementPath, attr, value | 改任意元素的属性。**elementPath 从根元素的直接子级开始**（清单写 `manifest/application`）；同名取第二个用 `activity[1]`。属性不存在则新建 |
 | `manifest.set` | W | workspaceId, field, value | appLabel / packageName / versionName / versionCode / debuggable |
 | `icon.replace` | W | workspaceId, source(image/dir), densities? | **P0 卖点**：自动生成各密度 mipmap |
 | `asset.put` / `asset.delete` | W | workspaceId, path, file? | 任意条目的增删（不只 assets）；工作台「文件」标签走这条 |
