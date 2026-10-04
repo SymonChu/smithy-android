@@ -1,6 +1,7 @@
 package dev.smithy.engine.internal
 
 import com.reandroid.apk.ApkModule
+import java.io.File
 import com.reandroid.arsc.chunk.xml.ResXmlAttribute
 import com.reandroid.arsc.chunk.xml.ResXmlDocument
 import com.reandroid.arsc.chunk.xml.ResXmlElement
@@ -116,6 +117,66 @@ internal object XmlBridge {
         created.setName(attr)
         created.setValueAsString(value)
         return true
+    }
+
+    /**
+     * 让文档自己写出一份**新字节**。
+     *
+     * 这是普通 xml **唯一**有效的做法：改内存对象不会落盘（`docs/08` 10.2），
+     * 必须让文档重新序列化一遍。
+     *
+     * 清单不走这里 —— 它能落盘（`AndroidManifestBlock` 是 module 自己的对象），
+     * 而且那条路 M1 就验证过，别动它。
+     */
+    fun writeDocumentBytes(module: ApkModule, path: String, tmpDir: File): File? {
+        val doc = docOf(module, path) ?: return null
+        // 改完属性要 refreshFull，否则序列化出来的还是旧结构
+        doc.refreshFull()
+        tmpDir.mkdirs()
+        // 按路径取名：同一个目录里可能连着改好几个 xml，共用一个文件名会互相覆盖
+        val f = File(tmpDir, "rewritten-${path.hashCode()}.xml")
+        return runCatching {
+            doc.writeBytes(f)
+            f
+        }.getOrNull()
+    }
+
+    /**
+     * 改属性 **并且**写出一份新字节 —— 一个函数里做完。
+     *
+     * **为什么必须合成一步**：`docOf` 每次都返回一个**新对象**（`loadResXmlDocument` 是新建的）。
+     * 所以「先用一个对象改属性、再让另一个对象序列化」等于什么都没改 —— 两个对象不同，
+     * 而且**全程不报错**。这就是「改普通 xml 不生效」的真身。
+     *
+     * 清单不走这里：它是 module 自己的对象，`docOf` 拿到的一直是同一个。
+     */
+    fun patchAndWrite(
+        module: ApkModule,
+        path: String,
+        elementPath: String,
+        attr: String,
+        value: String,
+        tmpDir: File,
+    ): File? {
+        val doc = docOf(module, path) ?: return null
+        val element = findElement(doc, elementPath) ?: return null
+
+        val target = findAttribute(element, attr) ?: run {
+            val created = runCatching { element.newAttribute() }.getOrNull() ?: return null
+            created.setName(attr)
+            created
+        }
+        target.setValueAsString(value)
+
+        // 改完要 refresh 内部结构，否则序列化出来的还是旧的
+        doc.refreshFull()
+        tmpDir.mkdirs()
+        // 按路径取名：同一个目录里可能连着改好几个 xml
+        val f = File(tmpDir, "rewritten-${path.hashCode()}.xml")
+        return runCatching {
+            doc.writeBytes(f)
+            f
+        }.getOrNull()
     }
 
     /** 按名字找属性。名字可能带 `android:` 前缀也可能不带，所以三种形态都比一次。 */

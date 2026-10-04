@@ -684,20 +684,41 @@ internal class ApkProjectImpl(
         elementPath: String,
         attr: String,
         value: String,
-    ): PatchRecord = withContext(Dispatchers.IO) {
-        if (!XmlBridge.patchAttribute(module, path, elementPath, attr, value)) {
+    ) : PatchRecord = withContext(Dispatchers.IO) {
+        // 清单与普通 xml 走不同的路：
+        //  - 清单能落盘（`AndroidManifestBlock` 是 module 自己的对象），沿用 M1 验证过的那条
+        //  - 普通 xml 必须「在**同一个**对象上改完再序列化」，见 `XmlBridge.patchAndWrite`
+        val isManifest = path == MANIFEST_ENTRY
+        if (isManifest && !XmlBridge.patchAttribute(module, path, elementPath, attr, value)) {
             throw NoSuchElementException(
                 "在 $path 里找不到元素路径「$elementPath」" +
                     "（写法是 application/activity，第二个用 activity[1]）",
             )
         }
 
-        val files = ArscBridge.writeAndExtract(module, setOf(path), tmpDir("axml"))
-        val after = files[path]
-            ?: throw IllegalStateException("改完了却拿不到新的 $path，这个条目可能不是标准二进制 XML")
+        val after = if (isManifest) {
+            ArscBridge.writeAndExtract(module, setOf(path), tmpDir("axml"))[path]
+        } else {
+            XmlBridge.patchAndWrite(module, path, elementPath, attr, value, tmpDir("axml"))
+        }
+
+        if (after == null) {
+            throw NoSuchElementException(
+                "改 $path 没成功。可能是：\n" +
+                    "  ① 找不到元素路径「$elementPath」（写法是 set/translate，同级第二个用 [1]）；\n" +
+                    "  ② 找不到属性「$attr」（要带前缀，比如 android:duration）；\n" +
+                    "  ③ 这个条目不是标准二进制 XML。\n" +
+                    "先读一下这个 xml，照着它写路径和属性名。",
+            )
+        }
 
         if (isUnchanged(path, after)) {
-            throw IllegalStateException("$path 一个字节都没变：那个属性的值可能本来就等于「$value」")
+            throw IllegalStateException(
+                "$path 没变。两种可能：\n" +
+                    "  ① 那个属性的值本来就等于「$value」；\n" +
+                    "  ② 改动没能落盘。\n" +
+                    "先读一下这个 xml 的原值再判断。",
+            )
         }
 
         stageEntry(
