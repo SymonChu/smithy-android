@@ -111,6 +111,12 @@ fun SmithyRoot() {
                     onRename = filesVm::rename,
                     onDelete = filesVm::delete,
                     onDismissProperties = filesVm::dismissProperties,
+                    onToggleSelecting = filesVm::toggleSelecting,
+                    onSelectAll = filesVm::selectAllFiles,
+                    onClearSelection = filesVm::clearSelection,
+                    onRulesChange = filesVm::onRulesChange,
+                    onApplyRename = filesVm::applyRename,
+                    onToggleSelected = filesVm::toggleSelected,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen()

@@ -4,6 +4,9 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.smithy.fs.ZipEditor
+import dev.smithy.fs.RenameRules
+import dev.smithy.fs.RenamePlan
+import dev.smithy.fs.planRename
 import dev.smithy.fs.ZipEntryInfo
 import dev.smithy.fs.Hashing
 import kotlinx.coroutines.Dispatchers
@@ -69,6 +72,18 @@ data class FilesUiState(
 
     /** 属性面板的数据（null = 没在显示）。 */
     val properties: Properties? = null,
+
+    /** 是否处于多选状态。 */
+    val selecting: Boolean = false,
+
+    /** 选中的条目路径。 */
+    val selected: Set<String> = emptySet(),
+
+    /** 批量改名规则。 */
+    val renameRules: RenameRules = RenameRules(),
+
+    /** 预览计划（null = 没有可改的）。 */
+    val renamePlan: RenamePlan? = null,
 )
 
 /**
@@ -163,6 +178,106 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun dismissProperties() = _state.update { it.copy(properties = null) }
+
+    // ── 多选与批量改名 ────────────────────────────────────────
+
+    fun toggleSelecting() = _state.update {
+        if (it.selecting) {
+            it.copy(
+                selecting = false,
+                selected = emptySet(),
+                renamePlan = null,
+                renameRules = RenameRules(),
+            )
+        } else {
+            it.copy(selecting = true)
+        }
+    }
+
+    fun toggleSelected(path: String) = _state.update { s ->
+        val next = if (path in s.selected) s.selected - path else s.selected + path
+        s.copy(selected = next, renamePlan = recomputePlan(s, next))
+    }
+
+    /** 全选**文件**：目录改名会牵动它下面所有内容的路径，批量脚本里容易出事。 */
+    fun selectAllFiles() = _state.update { s ->
+        val all = s.items.filterNot { it.dir }.map { it.path }.toSet()
+        s.copy(selected = all, renamePlan = recomputePlan(s, all))
+    }
+
+    fun clearSelection() = _state.update { s ->
+        s.copy(selected = emptySet(), renamePlan = recomputePlan(s, emptySet()))
+    }
+
+    /**
+     * 改规则就立刻重算预览。
+     *
+     * 不做「先点预览再看」：预览本来就是给人边调边看的，分成两步只会让人对着
+     * 一份过期的列表去点应用。
+     */
+    fun onRulesChange(rules: RenameRules) = _state.update { s ->
+        s.copy(renameRules = rules, renamePlan = recomputePlan(s, s.selected, rules))
+    }
+
+    private fun recomputePlan(
+        s: FilesUiState,
+        selected: Set<String>,
+        rules: RenameRules = s.renameRules,
+    ): RenamePlan? {
+        if (selected.isEmpty()) return null
+        val byPath = s.items.associateBy { it.path }
+        val names = selected.mapNotNull { byPath[it]?.name }
+        if (names.isEmpty()) return null
+        val selectedNames = names.toSet()
+        // 「没被选中的」现有名字：改到它们上面会覆盖掉
+        val existing = s.items.map { it.name }.filterNot { it in selectedNames }.toSet()
+        val dirFlags = s.items.associate { it.name to it.dir }
+        return planRename(names, rules, existing) { dirFlags[it] ?: false }
+    }
+
+    /**
+     * 执行批量改名。
+     *
+     * **撞名时整体不动**（界面上「应用」也不会亮）：批量改名不可撤销，而撞名的后果
+     * 是**静默覆盖** —— 用户可能几天后才发现某个文件不见了。部分成功比整体不动
+     * 更难收拾，所以这里要么全改、要么不改。
+     */
+    fun applyRename() {
+        val plan = _state.value.renamePlan ?: return
+        if (!plan.canApply) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "改名中…", message = null, isError = false) }
+            try {
+                val dir = File(_state.value.dir)
+                val (ok, failed) = withContext(Dispatchers.IO) {
+                    var done = 0
+                    val bad = mutableListOf<String>()
+                    plan.changed.forEach { item ->
+                        if (File(dir, item.from).renameTo(File(dir, item.to))) done++ else bad += item.from
+                    }
+                    done to bad
+                }
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        selecting = false,
+                        selected = emptySet(),
+                        renamePlan = null,
+                        renameRules = RenameRules(),
+                        message = if (failed.isEmpty()) {
+                            "已改名 $ok 项"
+                        } else {
+                            "改名 $ok 项，${failed.size} 项失败：${failed.take(3).joinToString()}"
+                        },
+                        isError = failed.isNotEmpty(),
+                    )
+                }
+                openDir(_state.value.dir)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
 
     /**
      * 给文件改名。

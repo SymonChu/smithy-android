@@ -17,7 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import dev.smithy.fs.humanTime
+import dev.smithy.fs.RenameRules
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Button
@@ -36,6 +39,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -68,6 +73,12 @@ fun FilesScreen(
     onRename: (FsItem, String) -> Unit,
     onDelete: (FsItem) -> Unit,
     onDismissProperties: () -> Unit,
+    onToggleSelecting: () -> Unit,
+    onSelectAll: () -> Unit,
+    onClearSelection: () -> Unit,
+    onRulesChange: (RenameRules) -> Unit,
+    onApplyRename: () -> Unit,
+    onToggleSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -87,9 +98,72 @@ fun FilesScreen(
 
     Column(modifier.fillMaxSize()) {
         val zip = state.zip
-        if (zip == null) {
+        // 宽屏（平板 / 横屏）才分栏。手机竖屏并排两栏会把每边压到十几列字符宽，
+        // 连路径都显示不全 —— 那比单栏更难用，所以阈值卡在 600dp
+        val wide = LocalConfiguration.current.screenWidthDp >= WIDE_DP
+
+        if (wide) {
+            // 左右并列：目录一栏、包内容一栏。
+            // 这两者是**不同层级**的东西（一个在文件系统里、一个在压缩包内部），
+            // 并排比上下叠着更贴近它们的关系，而且互不遮挡 —— 改包时能一直看着文件列表
+            Row(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f)) {
+                    DirHeader(state.dir, relative, onGoUp)
+                    FilterRow(state.filter, onFilter)
+                    SelectionBar(
+                        state = state,
+                        onToggleSelecting = onToggleSelecting,
+                        onSelectAll = onSelectAll,
+                        onClear = onClearSelection,
+                        onRulesChange = onRulesChange,
+                        onApply = onApplyRename,
+                    )
+                    DirList(
+                        state = state,
+                        modifier = Modifier.weight(1f),
+                        onOpenItem = onOpenItem,
+                        onShowProperties = onShowProperties,
+                        onRename = onRename,
+                        onDelete = onDelete,
+                        onToggleSelected = onToggleSelected,
+                    )
+                }
+                VerticalDivider()
+                Column(Modifier.weight(1f)) {
+                    if (zip == null) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                "这一栏显示包内条目\n点左边的 apk / zip 打开",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    } else {
+                        ZipHeader(zip, state.busy)
+                        ZipList(
+                            zip,
+                            Modifier.weight(1f),
+                            onReplaceEntry,
+                            onDeleteEntry,
+                            onUndoEntry,
+                            onOpenText,
+                        )
+                        ZipActions(zip, onCloseZip, onSaveZip)
+                    }
+                }
+            }
+        } else if (zip == null) {
             DirHeader(state.dir, relative, onGoUp)
             FilterRow(state.filter, onFilter)
+            SelectionBar(
+                state = state,
+                onToggleSelecting = onToggleSelecting,
+                onSelectAll = onSelectAll,
+                onClear = onClearSelection,
+                onRulesChange = onRulesChange,
+                onApply = onApplyRename,
+            )
             DirList(
                 state = state,
                 modifier = Modifier.weight(1f),
@@ -97,6 +171,7 @@ fun FilesScreen(
                 onShowProperties = onShowProperties,
                 onRename = onRename,
                 onDelete = onDelete,
+                onToggleSelected = onToggleSelected,
             )
         } else {
             ZipHeader(zip, state.busy)
@@ -107,6 +182,9 @@ fun FilesScreen(
         state.message?.let { MessageBar(it, state.isError) }
     }
 }
+
+/** 到这个宽度就分栏（600dp 是手机竖屏与平板的常见分界，也是 Material 窗口尺寸类的边界）。 */
+private const val WIDE_DP = 600
 
 @Composable
 private fun DirHeader(dir: String, relative: (String) -> String, onGoUp: () -> Unit) {
@@ -146,6 +224,7 @@ private fun DirList(
     onShowProperties: (FsItem) -> Unit,
     onRename: (FsItem, String) -> Unit,
     onDelete: (FsItem) -> Unit,
+    onToggleSelected: (String) -> Unit,
 ) {
     var menuFor by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<FsItem?>(null) }
@@ -169,12 +248,22 @@ private fun DirList(
                 Row(
                     Modifier.fillMaxWidth()
                         .combinedClickable(
-                            onClick = { onOpenItem(item) },
+                            onClick = {
+                                // 选择模式下点击 = 勾选/取消，而不是打开 ——
+                                // 否则「想多选」得先退出、再重新进，很别扭
+                                if (state.selecting) onToggleSelected(item.path) else onOpenItem(item)
+                            },
                             onLongClick = { menuFor = item.path },
                         )
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    if (state.selecting) {
+                        Checkbox(
+                            checked = item.path in state.selected,
+                            onCheckedChange = { onToggleSelected(item.path) },
+                        )
+                    }
                     Column(Modifier.weight(1f)) {
                         Text(
                             (if (item.dir) "📁 " else "📄 ") + item.name,
@@ -231,7 +320,118 @@ private fun DirList(
 }
 
 /**
- * 属性 / 摘要。
+ * 多选与批量改名的工具栏 + 预览。
+ *
+ * 预览**边调边出**，不设「预览」按钮：批量改名不可撤销，让人对着一份过期的
+ * 列表点「应用」是最容易出事的地方，而实时预览让「看到的就是要执行的」。
+ */
+@Composable
+private fun SelectionBar(
+    state: FilesUiState,
+    onToggleSelecting: () -> Unit,
+    onSelectAll: () -> Unit,
+    onClear: () -> Unit,
+    onRulesChange: (RenameRules) -> Unit,
+    onApply: () -> Unit,
+) {
+    val plan = state.renamePlan
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onToggleSelecting) {
+                    Text(if (state.selecting) "退出多选" else "多选")
+                }
+                if (state.selecting) {
+                    TextButton(onClick = onSelectAll) { Text("全选文件") }
+                    TextButton(onClick = onClear) { Text("清空") }
+                    Spacer(Modifier.weight(1f))
+                    Text("${state.selected.size} 项", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+
+            if (!state.selecting) return@Column
+
+            RulesEditor(state.renameRules, onRulesChange)
+
+            plan?.let { p ->
+                // 撞名时说清后果，而不是只把「应用」变灰 —— 灰按钮不解释为什么
+                if (p.conflicts.isNotEmpty()) {
+                    Text(
+                        "有 ${p.conflicts.size} 个目标名重复或已存在，不能执行：" +
+                            p.conflicts.take(3).joinToString() +
+                            "（会覆盖掉别的文件）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                } else if (!p.hasChanges) {
+                    Text(
+                        "当前规则不会改动任何名字",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                // 预览：只列真正会变的，且最多 8 条（改几百个时列表会淹没界面）
+                p.changed.take(8).forEach { item ->
+                    Text(
+                        "${item.from}  →  ${item.to}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                if (p.changed.size > 8) {
+                    Text(
+                        "…以及另外 ${p.changed.size - 8} 项",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                Spacer(Modifier.height(6.dp))
+                Button(onClick = onApply, enabled = p.canApply) {
+                    Text("应用（改 ${p.changed.size} 项）")
+                }
+            }
+        }
+    }
+}
+
+/** 规则编辑：四个字段都直接改模型，预览跟着变。 */
+@Composable
+private fun RulesEditor(rules: RenameRules, onChange: (RenameRules) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        RuleRow("查找", rules.find) { onChange(rules.copy(find = it)) }
+        RuleRow("替换为", rules.replaceWith) { onChange(rules.copy(replaceWith = it)) }
+        RuleRow("前缀", rules.prefix) { onChange(rules.copy(prefix = it)) }
+        RuleRow("后缀", rules.suffix) { onChange(rules.copy(suffix = it)) }
+        RuleRow("扩展名", rules.newExtension) { onChange(rules.copy(newExtension = it)) }
+        RuleRow("起始编号", rules.numberFrom?.toString() ?: "") { text ->
+            // 空串 = 不编号；非数字一律当不编号，不给「改了但没生效」的错觉
+            onChange(rules.copy(numberFrom = text.trim().toIntOrNull()))
+        }
+    }
+}
+
+@Composable
+private fun RuleRow(label: String, value: String, onChange: (String) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.width(64.dp),
+        )
+        OutlinedTextField(
+            value = value,
+            onValueChange = onChange,
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * 属性 / 摘要卡片。
  *
  * 不用对话框装它：摘要要能**逐行选中复制**（对比包的 MD5 正是主要用途），
  * 而 SHA-256 有 64 个字符，挤在对话框的窄宽度里会折行，抄起来更容易错。
