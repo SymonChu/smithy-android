@@ -49,12 +49,17 @@ fun ApkWorkbenchScreen(modifier: Modifier = Modifier) {
 
     val pick = { picker.launch(arrayOf("*/*")) }
 
+    // 换图标单独一个选择器：只收图片，免得用户选到别的文件
+    val iconPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(vm::replaceIcon) }
+
     Box(modifier.fillMaxSize()) {
         when (val phase = state.phase) {
             is Phase.Empty -> EmptyState(pick)
             is Phase.Loading -> LoadingState(phase.stage)
             is Phase.Failed -> FailedState(phase, pick)
-            is Phase.Ready -> ReadyContent(state, vm, pick)
+            is Phase.Ready -> ReadyContent(state, vm, pick) { iconPicker.launch(arrayOf("image/*")) }
         }
     }
 }
@@ -124,6 +129,7 @@ private fun ReadyContent(
     state: WorkbenchUiState,
     vm: ApkWorkbenchViewModel,
     onPick: () -> Unit,
+    onPickIcon: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         // ── 顶栏 ──
@@ -169,6 +175,16 @@ private fun ReadyContent(
                     onOpenClass = vm::openClass,
                     onCodeView = vm::showCodeView,
                     onReplace = vm::replaceString,
+                )
+
+                WorkbenchTab.RESOURCES -> ResourcesTab(
+                    state = state,
+                    onType = vm::setResType,
+                    onFilter = vm::setResFilter,
+                    onLoad = vm::loadResources,
+                    onSetResource = vm::setResource,
+                    onReplaceMany = vm::replaceMany,
+                    onPickIcon = onPickIcon,
                 )
 
                 WorkbenchTab.PATCHES -> PatchesTab(state = state, onRevert = vm::revert)

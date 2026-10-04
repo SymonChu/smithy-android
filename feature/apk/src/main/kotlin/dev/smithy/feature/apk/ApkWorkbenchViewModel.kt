@@ -12,7 +12,10 @@ import dev.smithy.engine.DexHit
 import dev.smithy.engine.DexQuery
 import dev.smithy.engine.InstallVia
 import dev.smithy.engine.PatchRecord
+import dev.smithy.engine.ReplaceScope
+import dev.smithy.engine.ResourceEntry
 import dev.smithy.engine.SignConfig
+import dev.smithy.engine.StringReplacement
 import dev.smithy.engine.WorkspaceState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +40,7 @@ sealed interface Phase {
 enum class WorkbenchTab(val label: String) {
     OVERVIEW("概览"),
     CODE("代码"),
+    RESOURCES("资源"),
     PATCHES("改动"),
 }
 
@@ -57,6 +61,12 @@ data class WorkbenchUiState(
     val javaCode: String? = null,
     val smaliCode: String? = null,
     val codeView: CodeView = CodeView.JAVA,
+
+    // ── 资源标签 ──
+    val resources: List<ResourceEntry> = emptyList(),
+    /** 空串表示「全部类型」 */
+    val resType: String = "string",
+    val resFilter: String = "",
 
     // ── 改动标签 ──
     val patches: List<PatchRecord> = emptyList(),
@@ -314,6 +324,147 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    // ── 资源标签：列资源 / 改单条 / 批量替换 ────────────────
+
+    fun setResType(type: String) {
+        _state.update { it.copy(resType = type) }
+        loadResources()
+    }
+
+    fun setResFilter(f: String) = _state.update { it.copy(resFilter = f) }
+
+    /**
+     * 列资源。
+     *
+     * 只把「类型 + 搜索词」交给引擎过滤，不把上万条资源全拉回来 —— 列表本身有 500 条上限，
+     * 到上限时提示用户缩小搜索范围，而不是悄悄截断。
+     */
+    fun loadResources() {
+        val project = opened ?: return
+        val s = _state.value
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "读资源表…", message = null, isError = false) }
+            try {
+                val list = project.resources(s.resType.ifBlank { null }, s.resFilter.ifBlank { null })
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        resources = list,
+                        message = "列出 ${list.size} 条" +
+                            if (list.size >= 500) "（到上限了，用搜索词再缩小一下）" else "",
+                    )
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /** 改一条字符串资源，如 `@string/app_name`。 */
+    fun setResource(resName: String, value: String) {
+        val project = opened ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "改写 $resName…", message = null, isError = false) }
+            try {
+                val rec = project.setResource(resName, value)
+                refreshPatches()
+                _state.update { it.copy(busy = null, message = "已改写 $resName（动了 ${rec.target}）") }
+                loadResources()   // 列表里的值要跟着变
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /**
+     * 批量替换文案。输入是「每行一条 `旧值=新值`」，`#` 开头的行当注释。
+     *
+     * 走 `ARSC` 作用域 —— 这是「改文案」的主路径，实测 200 组约 300ms。
+     * 走 `BOTH` 会去重写命中的 dex，同样 200 组要 27 秒（见 ReplaceScope 的说明），
+     * 所以这里不给用户选：改文案就该只动资源表。
+     */
+    fun replaceMany(text: String) {
+        val project = opened ?: return
+        val pairs = parsePairs(text)
+        if (pairs.isEmpty()) {
+            _state.update {
+                it.copy(message = "没解析出规则：每行写成「旧值=新值」，# 开头的行会被忽略", isError = true)
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "替换 ${pairs.size} 组…", message = null, isError = false) }
+            try {
+                val t0 = System.currentTimeMillis()
+                val records = project.replaceStrings(pairs, ReplaceScope.ARSC)
+                val cost = System.currentTimeMillis() - t0
+                refreshPatches()
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        message = if (records.isEmpty()) {
+                            "没有命中的资源文案"
+                        } else {
+                            "改了 ${records.size} 个条目，耗时 ${cost}ms"
+                        },
+                        isError = records.isEmpty(),
+                    )
+                }
+                loadResources()
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /**
+     * 换图标：把用户选的图按各密度缩放后写回。
+     *
+     * 只处理传统 PNG 图标（M2 的验收对象是「不含 adaptive icon 的老包」），
+     * 含 adaptive icon 的包会明确告诉用户不支持，而不是换一半留下一个不一致的图标。
+     */
+    fun replaceIcon(uri: Uri) {
+        val project = opened ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "换图标…", message = null, isError = false) }
+            try {
+                val entries = IconReplacer.findIconEntries(project.list())
+                if (entries.isEmpty()) {
+                    throw NoSuchElementException(
+                        "这个包里没找到传统图标条目（res/mipmap-<密度>/ic_launcher.png 那一套）。" +
+                            "若它用的是 adaptive icon，本轮还不支持替换 —— 见 docs/06 的 M2 说明",
+                    )
+                }
+
+                val src = copyToCache(uri, "icon-source")
+                val records = IconReplacer.replace(project, src, entries)
+                refreshPatches()
+
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        workspaceState = project.state,
+                        message = "换了 ${records.size} 个密度：${entries.keys.joinToString("、")}。" +
+                            "重打包签名后装机看效果",
+                    )
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    private fun parsePairs(text: String): List<StringReplacement> =
+        text.lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .mapNotNull { line ->
+                val i = line.indexOf('=')
+                // `=` 在开头或没有 `=` 的行不算规则（空白的「旧值」会把所有值都改坏）
+                if (i <= 0) null else StringReplacement(line.substring(0, i), line.substring(i + 1))
+            }
 
     // ── 改动管理 ─────────────────────────────────────────────
 
