@@ -10,7 +10,9 @@ import dev.smithy.engine.ApkMeta
 import dev.smithy.engine.ApkProject
 import dev.smithy.engine.BuildProgress
 import dev.smithy.engine.ComponentInfo
+import dev.smithy.engine.DexQuery
 import dev.smithy.engine.DexStat
+import dev.smithy.engine.IconTargets
 import dev.smithy.engine.InstallChannel
 import dev.smithy.engine.InstallResult
 import dev.smithy.engine.InstallVia
@@ -22,10 +24,9 @@ import dev.smithy.engine.ResourceEntry
 import dev.smithy.engine.SignConfig
 import dev.smithy.engine.SignatureInfo
 import dev.smithy.engine.StringReplacement
+import dev.smithy.engine.DexHit
 import dev.smithy.engine.VerifyResult
 import dev.smithy.engine.WorkspaceState
-import dev.smithy.engine.DexHit
-import dev.smithy.engine.DexQuery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -103,7 +104,29 @@ internal class ApkProjectImpl(
     private val apiLevel: Int get() = meta.minSdk.takeIf { it in 21..99 } ?: 21
 
     private fun dexIndex(): DexIndex = dexIndexRef ?: synchronized(this) {
-        dexIndexRef ?: DexIndex(apkFile, apiLevel).also { dexIndexRef = it }
+        dexIndexRef ?: DexIndex(
+            apkFile,
+            apiLevel,
+            // 覆盖层优先：改完 dex 之后重建的索引必须读到改动，否则「改完再搜」看到旧内容
+            overlayBytes = { path -> workspaceRef?.overlayFile(path)?.readBytes() },
+        ).also { dexIndexRef = it }
+    }
+
+    /**
+     * 让 dex 索引失效。
+     *
+     * **改了 dex 就必须调用**：`DexIndex` 持有的是原包里那份 dex 的句柄且带缓存 ——
+     * 不失效的话，同一次会话里「改完再搜」会看到旧内容。
+     * 而「改一下、搜一下确认」恰恰是最常用的操作（用户和 AI 都这么用），
+     * 看到旧内容会让人以为改动没生效，进而重复改一遍。
+     */
+    private fun resetDexIndex() {
+        synchronized(this) {
+            dexIndexRef?.close()
+            dexIndexRef = null
+            // jadx 会话绑在 dex 上，索引换了它也得重建，否则反编译看到的是旧代码
+            jadxRef = null
+        }
     }
 
     /** jadx 会话懒建：不点开 Java 视图，就一个字节都不为它加载 */
@@ -192,6 +215,11 @@ internal class ApkProjectImpl(
         val before = ws.overlayFile(entryPath) ?: extractOriginal(entryPath)
         val record = ws.stage(entryPath, before, after, kind, PatchOrigin.User, note)
         state = WorkspaceState.DIRTY
+
+        // dex 变了就让索引失效。放在这里而不是各调用点：所有 dex 改动都经过 stageEntry，
+        // 这样不会漏掉某条路径（漏了的症状是「改完搜不到新值」）
+        if (entryPath.endsWith(".dex")) resetDexIndex()
+
         return record
     }
 
@@ -430,6 +458,19 @@ internal class ApkProjectImpl(
         }
 
     override suspend fun replaceIcon(source: String, densities: List<String>?): List<PatchRecord> = todo("replaceIcon")
+
+    override suspend fun iconTargets(): IconTargets = withContext(Dispatchers.IO) {
+        val paths = mutableListOf<String>()
+        val entries = zip.entries()
+        while (entries.hasMoreElements()) paths += entries.nextElement().name
+
+        IconResolver.resolve(
+            manifest = runCatching { module.getAndroidManifest() }.getOrNull(),
+            table = runCatching { module.getTableBlock() }.getOrNull(),
+            allPaths = paths,
+            readXml = { path -> XmlBridge.decode(module, path) },
+        )
+    }
 
     // ── XML 层 ────────────────────────────────────────────────
 

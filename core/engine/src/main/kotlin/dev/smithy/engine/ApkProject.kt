@@ -69,6 +69,19 @@ interface ApkProject : AutoCloseable {
     suspend fun setManifestField(field: ManifestField, value: String): PatchRecord
     suspend fun replaceIcon(source: String, densities: List<String>? = null): List<PatchRecord>
 
+    /**
+     * 解析这个包的图标由哪些条目组成。
+     *
+     * **不按名字猜**（`ic_launcher` 只是 Android Studio 模板的默认名，实际项目里
+     * `app_icon`、`launcher_logo` 都很常见），而是顺着清单的 `android:icon` 引用走：
+     * 引用 → 资源名 → 该资源的所有密度变体；指向 adaptive icon 的 xml 时再顺着
+     * 里面的 drawable 引用找前景 / 背景。
+     *
+     * 找不到时 [IconTargets.notes] 会说明**为什么**（清单没声明 / 指向纯色 / 名字对不上），
+     * 这比一句「换不了」有用得多。
+     */
+    suspend fun iconTargets(): IconTargets
+
     // ── XML 层 ────────────────────────────────────────────────
     /**
      * 把包内二进制 XML 解码成可读文本。

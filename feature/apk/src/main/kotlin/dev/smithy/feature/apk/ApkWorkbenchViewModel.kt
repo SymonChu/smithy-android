@@ -427,48 +427,33 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 换图标：把用户选的图按各密度缩放后写回。
+     * 换图标。
      *
-     * 两条路：**优先 adaptive icon**（当代包基本都用它，前景层缩到安全区再居中），
-     * 没有 adaptive 才走传统 PNG 图标。两条都没有就明确报错，不静默什么都不做。
+     * 图标条目由引擎从清单解析（不按名字猜），这里只负责画。
+     * 换不了时要把**为什么**说出来 —— 引擎给的 notes 会讲清是「清单没声明」、
+     * 「指向纯色」还是别的原因，比一句通用的「找不到」有用得多。
      */
     fun replaceIcon(uri: Uri) {
         val project = opened ?: return
         viewModelScope.launch {
             _state.update { it.copy(busy = "换图标…", message = null, isError = false) }
             try {
-                val entries = project.list()
-                val adaptive = IconReplacer.findAdaptiveLayers(entries)
-                val traditional = IconReplacer.findIconEntries(entries)
-
-                val src = copyToCache(uri, "icon-source")
-                val records: List<PatchRecord>
-                val what: String
-
-                when {
-                    !adaptive.isEmpty -> {
-                        records = IconReplacer.replaceAdaptive(project, src, adaptive)
-                        what = "adaptive icon（前景 ${adaptive.foreground.size} 个密度" +
-                            if (adaptive.background.isEmpty()) "，背景是纯色定义未动）" else "，背景也换了）"
-                    }
-
-                    traditional.isNotEmpty() -> {
-                        records = IconReplacer.replace(project, src, traditional)
-                        what = "传统图标 ${traditional.keys.joinToString("、")}"
-                    }
-
-                    else -> throw NoSuchElementException(
-                        "这个包里没找到图标条目（既没有 res/mipmap-*/ic_launcher.png，" +
-                            "也没有 ic_launcher_foreground）。图标名不标准的包目前换不了",
-                    )
+                val targets = project.iconTargets()
+                if (!targets.isReplaceable) {
+                    val why = targets.notes.joinToString("；").ifBlank { "没有定位到可替换的图标条目" }
+                    throw NoSuchElementException("这个包的图标换不了：$why")
                 }
 
+                val src = copyToCache(uri, "icon-source")
+                val records = IconReplacer.replace(project, src, targets)
                 refreshPatches()
+
                 _state.update {
                     it.copy(
                         busy = null,
                         workspaceState = project.state,
-                        message = "换了 $what，共 ${records.size} 个条目。重打包签名后装机看效果",
+                        message = "已换 ${targets.declaredIcon ?: "图标"} 的 ${targets.layerSummary}，" +
+                            "共 ${records.size} 个条目。重打包签名后装机看效果",
                     )
                 }
             } catch (t: Throwable) {

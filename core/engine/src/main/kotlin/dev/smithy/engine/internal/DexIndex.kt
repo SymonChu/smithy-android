@@ -16,7 +16,20 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * 写能力不在这里：字符串替换见 [DexEditor]，smali 往返见 [SmaliBridge]。
  */
-internal class DexIndex(private val apkFile: File, val apiLevel: Int) : AutoCloseable {
+internal class DexIndex(
+    private val apkFile: File,
+    val apiLevel: Int,
+    /**
+     * 覆盖层里的条目字节（改动后的版本）；返回 null 表示该条目没被改过。
+     *
+     * **为什么传字节而不是文件**：dexlib2 从「APK 容器」加载和从「裸 dex 文件」加载
+     * 得到的指令视图不一致 —— 实测同一份字节，走容器能扫到 const-string 指令，
+     * 走裸文件却扫不到（字节里明明有那个字符串）。而用字节走内存构造，解析路径与容器一致。
+     *
+     * 没有它的话，「改完再搜」会看到旧内容 —— 而这恰恰是最常用的操作。
+     */
+    private val overlayBytes: ((String) -> ByteArray?)? = null,
+) : AutoCloseable {
 
     // loadDexContainer 声明为 MultiDexContainer<? extends DexBackedDexFile>，Kotlin 侧要 out 投影
     private val container: MultiDexContainer<out DexBackedDexFile> =
@@ -37,7 +50,12 @@ internal class DexIndex(private val apkFile: File, val apiLevel: Int) : AutoClos
 
     fun dex(name: String): DexBackedDexFile? {
         cache[name]?.let { return it }
-        val loaded = runCatching { container.getEntry(name)?.dexFile }.getOrNull() ?: return null
+        val loaded = runCatching {
+            // 覆盖层优先：改过的 dex 在覆盖层里，container 读到的仍是原包那份
+            overlayBytes?.invoke(name)
+                ?.let { bytes -> DexBackedDexFile(Opcodes.forApi(apiLevel), bytes) }
+                ?: container.getEntry(name)?.dexFile
+        }.getOrNull() ?: return null
         cache[name] = loaded
         return loaded
     }
