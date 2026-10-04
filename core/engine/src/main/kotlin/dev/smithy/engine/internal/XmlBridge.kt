@@ -23,6 +23,21 @@ internal object XmlBridge {
     private val INDEX = Regex("""\[(\d+)]""")
 
     /**
+     * 取某个 xml 的文档对象，优先取 module 里已有的那份。
+     *
+     * **但要知道这条路的限度**（实测踩过）：ARSCLib 对普通 xml 是「读时解析、写出时回放
+     * 原始字节」，`getResXmlDocument` 每次还会返回不同对象 —— 所以**改普通 xml 的内存对象
+     * 不会落到产物里**，而且全程不报错。清单是例外（`AndroidManifestBlock` 是 module
+     * 自己的对象），所以改清单有效。
+     *
+     * 需要改普通 xml 时，正确做法是**从零构造一份新的 xml 字节**再整条替换，
+     * 而不是「读出来改对象」。目前还没这个需求（换图标改的是清单，见 `applyIconReplace`）。
+     */
+    private fun docOf(module: ApkModule, path: String): ResXmlDocument? =
+        runCatching { module.getResXmlDocument(path) }.getOrNull()
+            ?: runCatching { module.loadResXmlDocument(path) }.getOrNull()
+
+    /**
      * 解码成可读文本。
      *
      * **没走 ARSCLib 的 `decodeXMLFile`**：它对着清单会失败 —— 清单在 ARSCLib 里是特殊类型
@@ -32,7 +47,7 @@ internal object XmlBridge {
      * 读不出来返回 null（条目不存在，或它不是二进制 XML）。
      */
     fun decode(module: ApkModule, path: String): String? {
-        val doc = runCatching { module.loadResXmlDocument(path) }.getOrNull() ?: return null
+        val doc = docOf(module, path) ?: return null
         return runCatching {
             buildString { for (el in doc.getElements()) appendElement(el, this, 0) }
         }.getOrNull()?.takeIf { it.isNotBlank() }
@@ -92,12 +107,20 @@ internal object XmlBridge {
         attr: String,
         value: String,
     ): Boolean {
-        val doc = runCatching { module.loadResXmlDocument(path) }.getOrNull() ?: return false
+        val doc = docOf(module, path) ?: return false
         val element = findElement(doc, elementPath) ?: return false
 
-        // 先找现有属性：名字可能带命名空间前缀（android:debuggable），
-        // 用户给的是 attr 也可能带也可能不带，所以三种形态都比一次。
-        val attrs = element.getAttributes()
+        findAttribute(element, attr)?.let { it.setValueAsString(value); return true }
+
+        val created = runCatching { element.newAttribute() }.getOrNull() ?: return false
+        created.setName(attr)
+        created.setValueAsString(value)
+        return true
+    }
+
+    /** 按名字找属性。名字可能带 `android:` 前缀也可能不带，所以三种形态都比一次。 */
+    private fun findAttribute(element: ResXmlElement, attr: String): ResXmlAttribute? {
+        val attrs = runCatching { element.getAttributes() }.getOrNull() ?: return null
         while (attrs.hasNext()) {
             val a = attrs.next()
             val names = listOf(
@@ -105,16 +128,9 @@ internal object XmlBridge {
                 runCatching { a.decodeName(false) }.getOrNull(),
                 runCatching { a.decodeName(true) }.getOrNull(),
             )
-            if (attr in names) {
-                a.setValueAsString(value)
-                return true
-            }
+            if (attr in names) return a
         }
-
-        val created = runCatching { element.newAttribute() }.getOrNull() ?: return false
-        created.setName(attr)
-        created.setValueAsString(value)
-        return true
+        return null
     }
 
     /** 按 `a/b[1]/c` 这种路径找元素。找不到返回 null。 */

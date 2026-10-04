@@ -82,6 +82,23 @@ interface ApkProject : AutoCloseable {
      */
     suspend fun iconTargets(): IconTargets
 
+    /**
+     * 规划一次图标替换：告诉调用方要画哪些图、多大、内容画在哪个范围内。
+     *
+     * **本方法不画画、也不改包**。画图要用 Android 的 Bitmap，而引擎是纯 JVM ——
+     * 所以切成「规划 → 画图 → [applyIconReplace]」三步，职责在两边各自清楚。
+     */
+    suspend fun planIconReplace(): IconPlan
+
+    /**
+     * 应用画好的图。[rendered] 的 key 是 [IconRender.key]，值是 PNG 字节。
+     *
+     * 包里本来就有位图图层时是直接覆盖；只有矢量图/纯色时，会**新建 mipmap 资源**
+     * （各密度）并把 adaptive 声明指过来 —— 只塞 PNG 是没用的，资源表里没有条目，
+     * 系统找不到那张图。
+     */
+    suspend fun applyIconReplace(rendered: Map<String, ByteArray>): List<PatchRecord>
+
     // ── XML 层 ────────────────────────────────────────────────
     /**
      * 把包内二进制 XML 解码成可读文本。
@@ -170,7 +187,13 @@ data class ResourceEntry(
     val isComplex: Boolean,
 )
 
-enum class ManifestField { APP_LABEL, PACKAGE_NAME, VERSION_NAME, VERSION_CODE, DEBUGGABLE }
+/**
+ * 能直接改的清单字段。
+ *
+ * [ICON] 的值形如 `@mipmap/xxx`（也可以给 `mipmap/xxx`）—— 引擎会按名字查出资源 id 再写进去，
+ * 因为清单里存的是**引用**而不是名字。给空字符串表示**移除**这个声明。
+ */
+enum class ManifestField { APP_LABEL, PACKAGE_NAME, VERSION_NAME, VERSION_CODE, DEBUGGABLE, ICON }
 
 data class SignConfig(
     val keystoreRef: String? = null,   // null = 用内置自动生成的 keystore

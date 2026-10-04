@@ -41,8 +41,10 @@
 **任务**（状态截至最后一次提交）
 1. ✅ `arsc.list/set/replace_string` —— 含批量入口与作用域，见 `docs/08` 第十节
 2. ✅ `axml.decode` / `axml.patch`（任意元素的属性）+ `manifest.set`（常用清单字段，
-   如应用名 / 包名 / 版本 / debuggable）。路径从根元素的直接子级写起，清单是 `manifest/application`
-3. ✅ `icon.replace` —— 传统 PNG 图标与 adaptive icon 两种都能换，见下方「安全区」
+   如应用名 / 包名 / 版本 / debuggable / 图标（`ICON`：给 `@mipmap/xxx`，给空串则移除声明））。
+   路径从根元素的直接子级写起，清单是 `manifest/application`
+3. ✅ `icon.replace` —— 三种形态都能换：传统位图直接覆盖；adaptive 的位图前景按安全区缩放；
+   **只有矢量图 / 纯色**的现代包会新建 mipmap 资源并把清单的图标指过来（见 `docs/08` 第十节）
 4. ✅ `asset.put/delete`、`zip.*` 直改 —— 工作台「文件」标签：按路径前缀列条目、替换成设备上的文件、删除
 5. ✅ 工作台「资源」标签（列资源 / 改单条 / 批量换文案 / 换图标）+ 报告导出按钮
 6. ✅ 分析报告导出 Markdown（`ApkReport`：基本信息 / 签名 / 权限 / 组件 / DEX 五节）

@@ -12,6 +12,8 @@ import dev.smithy.engine.BuildProgress
 import dev.smithy.engine.ComponentInfo
 import dev.smithy.engine.DexQuery
 import dev.smithy.engine.DexStat
+import dev.smithy.engine.IconPlan
+import dev.smithy.engine.IconRender
 import dev.smithy.engine.IconTargets
 import dev.smithy.engine.InstallChannel
 import dev.smithy.engine.InstallResult
@@ -36,6 +38,30 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.zip.ZipFile
+
+/**
+ * 新图标资源的固定名。用固定名而不是随机名：重复替换时会覆盖同一组资源，
+ * 不会每换一次就往资源表里塞一整套新的（那会让包越来越大、资源表越来越脏）。
+ */
+private const val NEW_ICON_BASE = "smithy_icon"
+
+/** 清单条目名。改图标要连它一起落盘。 */
+private const val MANIFEST_ENTRY = "AndroidManifest.xml"
+
+/** adaptive 前景的安全区比例：108dp 的画布里只有中间 72dp 保证可见，超出会被启动器裁掉。 */
+private const val SAFE_NUM = 72
+private const val SAFE_DEN = 108
+
+/** 密度 → 两套尺寸（px）：传统图标边长、adaptive 画布边长。 */
+private data class DensityCanvas(val legacy: Int, val adaptive: Int)
+
+private val DENSITY_CANVAS = linkedMapOf(
+    "mdpi" to DensityCanvas(48, 108),
+    "hdpi" to DensityCanvas(72, 162),
+    "xhdpi" to DensityCanvas(96, 216),
+    "xxhdpi" to DensityCanvas(144, 324),
+    "xxxhdpi" to DensityCanvas(192, 432),
+)
 
 /**
  * 基于 ARSCLib 的引擎实现（M0：只读）。
@@ -471,6 +497,140 @@ internal class ApkProjectImpl(
             readXml = { path -> XmlBridge.decode(module, path) },
         )
     }
+
+    /** 已规划、等调用方把图画完传回来的方案。 */
+    private var pendingIconPlan: IconPlan? = null
+
+    override suspend fun planIconReplace(): IconPlan = withContext(Dispatchers.IO) {
+        val targets = iconTargets()
+
+        // ① 包里已有位图图层（传统图标，或 adaptive 的位图前景/背景）→ 直接覆盖。
+        //    注意「只有背景是位图、前景是矢量」的怪包也存在，所以三个都要看
+        if (targets.isReplaceable || targets.background.isNotEmpty()) {
+            val renders = buildList {
+                targets.legacy.forEach { (d, path) ->
+                    DENSITY_CANVAS[d]?.let {
+                        add(IconRender("legacy_$d", path, d, it.legacy, it.legacy, IconRender.Role.LEGACY_ICON))
+                    }
+                }
+                targets.foreground.forEach { (d, path) ->
+                    DENSITY_CANVAS[d]?.let {
+                        add(
+                            IconRender(
+                                "fg_$d", path, d, it.adaptive,
+                                it.adaptive * SAFE_NUM / SAFE_DEN, IconRender.Role.ADAPTIVE_FOREGROUND,
+                            ),
+                        )
+                    }
+                }
+                targets.background.forEach { (d, path) ->
+                    DENSITY_CANVAS[d]?.let {
+                        add(
+                            IconRender(
+                                "bg_$d", path, d, it.adaptive,
+                                it.adaptive, IconRender.Role.ADAPTIVE_BACKGROUND,
+                            ),
+                        )
+                    }
+                }
+            }
+            return@withContext IconPlan(
+                mode = IconPlan.Mode.OVERLAY,
+                renders = renders,
+                declaredIcon = targets.declaredIcon,
+                notes = listOf("包里已有位图图层，直接覆盖"),
+            ).also { pendingIconPlan = it }
+        }
+
+        // ② 只有矢量图 / 纯色 → 新建位图资源，并把清单的图标指向它。
+        //
+        // **为什么不改 adaptive 声明**：ARSCLib 对普通 xml 是「读时解析、写时回放原始字节」，
+        // 改内存里的对象不会落到输出上（`getResXmlDocument` 甚至每次返回不同对象）。
+        // 而清单走的是 `AndroidManifestBlock` —— module 自己的对象，改得动。
+        // 所以换个更简单也更可靠的做法：把清单的图标指向新建的位图资源，
+        // 原来那份 adaptive 声明留在包里、不再被引用。
+        val renders = DENSITY_CANVAS.map { (d, canvas) ->
+            IconRender(
+                key = "icon_$d",
+                entryPath = "res/mipmap-$d-v4/$NEW_ICON_BASE.png",
+                density = d,
+                canvasSize = canvas.legacy,
+                contentSize = canvas.legacy,
+                role = IconRender.Role.LEGACY_ICON,
+            )
+        }
+
+        return@withContext IconPlan(
+            mode = IconPlan.Mode.NEW_RESOURCES,
+            renders = renders,
+            declaredIcon = targets.declaredIcon,
+            adaptiveXml = targets.adaptiveXml,
+            newResourceBase = NEW_ICON_BASE,
+            notes = listOf(
+                // 两种情况要分开说：本来就有图标（只是不是位图），和压根没声明图标
+                if (targets.declaredIcon == null) {
+                    "清单里没有声明图标（可能由主题指定），所以会新建一个"
+                } else {
+                    "包里有图标声明 ${targets.declaredIcon}，但它不是位图（矢量图或纯色）"
+                },
+                "会新建 mipmap/$NEW_ICON_BASE（5 个密度），并把清单的 android:icon 指向它。" +
+                    "代价是图标从 adaptive 变成传统位图 —— 这是最稳的做法，" +
+                    "改 adaptive 声明那条路 ARSCLib 走不通",
+            ),
+        ).also { pendingIconPlan = it }
+    }
+
+    override suspend fun applyIconReplace(rendered: Map<String, ByteArray>): List<PatchRecord> =
+        withContext(Dispatchers.IO) {
+            val plan = pendingIconPlan
+                ?: throw IllegalStateException("先调 planIconReplace() 拿方案，再把画好的图传回来")
+            val out = mutableListOf<PatchRecord>()
+
+            // ① 写图。走覆盖层：新资源模式下这属于「新增条目」，覆盖模式下是替换
+            val written = mutableListOf<IconRender>()
+            for (r in plan.renders) {
+                val bytes = rendered[r.key] ?: continue
+                out += writeEntry(r.entryPath, bytes.inputStream())
+                written += r
+            }
+            if (written.isEmpty()) throw IllegalArgumentException("没有传回来任何图（key 对不上？）")
+
+            // ② 新资源模式：建资源表条目 + 把清单的图标指过来
+            if (plan.mode == IconPlan.Mode.NEW_RESOURCES) {
+                val base = plan.newResourceBase ?: error("方案里缺新资源名")
+
+                val iconId = ArscBridge.addMipmapResource(
+                    module, base, written.associate { it.density to it.entryPath },
+                )
+
+                // 改清单的 android:icon 指向新资源。清单是 AndroidManifestBlock
+                // （module 自己的对象），所以这条改得动 —— 普通 xml 改不动，见上面的说明
+                val manifest = module.getAndroidManifest()
+                    ?: error("这个包没有 AndroidManifest.xml，换不了图标")
+                manifest.setIconResourceId(iconId)
+                println("── 清单图标已指向 @mipmap/$base（id=0x${iconId.toString(16)}）")
+
+                // 资源表与清单一并落盘（清单这条路径在 M1 就验证过）
+                val files = ArscBridge.writeAndExtract(
+                    module, setOf(IconPlan.ARSC_ENTRY, MANIFEST_ENTRY), tmpDir("icon"),
+                )
+                files[IconPlan.ARSC_ENTRY]?.let {
+                    out += stageEntry(
+                        IconPlan.ARSC_ENTRY, it, PatchRecord.PatchKind.ARSC,
+                        note = "新建图标资源 mipmap/$base（${written.size} 个密度）",
+                    )
+                }
+                files[MANIFEST_ENTRY]?.let {
+                    out += stageEntry(
+                        MANIFEST_ENTRY, it, PatchRecord.PatchKind.AXML,
+                        note = "清单 android:icon 指向 @mipmap/$base",
+                    )
+                }
+            }
+
+            pendingIconPlan = null
+            out
+        }
 
     // ── XML 层 ────────────────────────────────────────────────
 

@@ -183,6 +183,14 @@ private fun ReadyContent(
                         meta = it,
                         sourceName = state.sourceName,
                         entryCount = state.entryCount,
+                        editLabel = state.editLabel,
+                        editVersionName = state.editVersionName,
+                        editVersionCode = state.editVersionCode,
+                        busy = state.busy,
+                        onLabelChange = vm::onEditLabel,
+                        onVersionNameChange = vm::onEditVersionName,
+                        onVersionCodeChange = vm::onEditVersionCode,
+                        onApplyEdits = vm::applyManifestEdits,
                         onExportReport = onExportReport,
                     )
                 }

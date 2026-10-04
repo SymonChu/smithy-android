@@ -13,6 +13,7 @@ import dev.smithy.engine.ApkReport
 import dev.smithy.engine.DexHit
 import dev.smithy.engine.DexQuery
 import dev.smithy.engine.InstallVia
+import dev.smithy.engine.ManifestField
 import dev.smithy.engine.PatchRecord
 import dev.smithy.engine.ReplaceScope
 import dev.smithy.engine.ResourceEntry
@@ -78,6 +79,12 @@ data class WorkbenchUiState(
     // ── 改动标签 ──
     val patches: List<PatchRecord> = emptyList(),
 
+    // ── 概览标签：改名 / 改版本 ──
+    // 三个输入框的当前文本。打开包时用实际值填充，用户改完点「应用」才写进包。
+    val editLabel: String = "",
+    val editVersionName: String = "",
+    val editVersionCode: String = "",
+
     // ── 打包链路 ──
     val workspaceState: WorkspaceState = WorkspaceState.IDLE,
     val rebuiltPath: String? = null,
@@ -124,12 +131,17 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
 
                 closeCurrent()
                 opened = project
+                val meta = project.meta
                 _state.value = WorkbenchUiState(
                     phase = Phase.Ready,
                     sourceName = name,
-                    meta = project.meta,
+                    meta = meta,
                     entryCount = count,
                     workspaceState = project.state,
+                    // 改名/版本的输入框用当前值打底，用户只需改动他要改的那个
+                    editLabel = meta.appLabel,
+                    editVersionName = meta.versionName,
+                    editVersionCode = meta.versionCode.toString(),
                 )
             } catch (t: Throwable) {
                 _state.update {
@@ -426,34 +438,110 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ── 概览：改名 / 改版本 ──────────────────────────────────────
+
+    fun onEditLabel(value: String) = _state.update { it.copy(editLabel = value) }
+
+    fun onEditVersionName(value: String) = _state.update { it.copy(editVersionName = value) }
+
+    fun onEditVersionCode(value: String) = _state.update { it.copy(editVersionCode = value) }
+
     /**
-     * 换图标。
+     * 应用概览里的改名 / 改版本。
      *
-     * 图标条目由引擎从清单解析（不按名字猜），这里只负责画。
-     * 换不了时要把**为什么**说出来 —— 引擎给的 notes 会讲清是「清单没声明」、
-     * 「指向纯色」还是别的原因，比一句通用的「找不到」有用得多。
+     * **只提交真正变了的字段**：不然每点一次「应用」都会在改动列表里多出三条记录，
+     * 用户想回退时要逐条退，很快就会懒得再用这个功能。
+     *
+     * 改完重新读一遍 meta —— 应用名和版本都来自清单，不重读的话界面还显示旧值，
+     * 而用户看到「没变化」只会再点一次。
+     */
+    fun applyManifestEdits() {
+        val project = opened ?: return
+        val s = _state.value
+        val meta = s.meta ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "改清单…", message = null, isError = false) }
+            try {
+                val codeText = s.editVersionCode.trim()
+                val code = codeText.toIntOrNull()
+                if (codeText.isNotEmpty() && code == null) {
+                    throw IllegalArgumentException("版本码必须是整数（系统靠它判断版本新旧）")
+                }
+
+                val changed = mutableListOf<String>()
+                val newLabel = s.editLabel.trim()
+                if (newLabel.isNotEmpty() && newLabel != meta.appLabel) {
+                    project.setManifestField(ManifestField.APP_LABEL, newLabel)
+                    changed += "应用名"
+                }
+                val newVersionName = s.editVersionName.trim()
+                if (newVersionName.isNotEmpty() && newVersionName != meta.versionName) {
+                    project.setManifestField(ManifestField.VERSION_NAME, newVersionName)
+                    changed += "版本名"
+                }
+                if (code != null && code.toLong() != meta.versionCode) {
+                    project.setManifestField(ManifestField.VERSION_CODE, code.toString())
+                    changed += "版本码"
+                }
+
+                if (changed.isEmpty()) {
+                    _state.update { it.copy(busy = null, message = "没有需要改的（内容没变）") }
+                    return@launch
+                }
+
+                val fresh = project.meta
+                refreshPatches()
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        meta = fresh,
+                        workspaceState = project.state,
+                        editLabel = fresh.appLabel,
+                        editVersionName = fresh.versionName,
+                        editVersionCode = fresh.versionCode.toString(),
+                        message = "已改 ${changed.joinToString("、")}。重打包签名后才生效",
+                    )
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /**
+     * 换图标：**规划 → 画图 → 应用** 三步。
+     *
+     * 切成三步是因为两侧能力不可替代：引擎是纯 JVM（有 ARSCLib，能改包结构与资源表），
+     * 而画图要用 Android 的 Bitmap。所以引擎说清「每张图多大、内容画在哪个范围」，
+     * UI 只负责缩放居中 —— 尺寸规则只有一处定义，不会两边各写一份。
      */
     fun replaceIcon(uri: Uri) {
         val project = opened ?: return
         viewModelScope.launch {
             _state.update { it.copy(busy = "换图标…", message = null, isError = false) }
             try {
-                val targets = project.iconTargets()
-                if (!targets.isReplaceable) {
-                    val why = targets.notes.joinToString("；").ifBlank { "没有定位到可替换的图标条目" }
-                    throw NoSuchElementException("这个包的图标换不了：$why")
+                val plan = project.planIconReplace()
+                if (plan.isEmpty) {
+                    throw NoSuchElementException(
+                        "这个包的图标换不了：没能规划出要替换的图。" +
+                            "它的图标可能是纯色或用主题指定的，包里没有任何可用图像",
+                    )
                 }
 
                 val src = copyToCache(uri, "icon-source")
-                val records = IconReplacer.replace(project, src, targets)
+                // 画图是 CPU 活（裁切 + 缩放 + 合成 5 张），别占着主线程
+                val rendered = withContext(Dispatchers.Default) { IconReplacer.render(src, plan) }
+
+                val records = project.applyIconReplace(rendered)
                 refreshPatches()
 
                 _state.update {
                     it.copy(
                         busy = null,
                         workspaceState = project.state,
-                        message = "已换 ${targets.declaredIcon ?: "图标"} 的 ${targets.layerSummary}，" +
-                            "共 ${records.size} 个条目。重打包签名后装机看效果",
+                        message = "换了 ${records.size} 个条目（${plan.renders.size} 个密度）" +
+                            plan.notes.lastOrNull()?.let { "：$it" }.orEmpty() +
+                            "。重打包签名后装机看效果",
                     )
                 }
             } catch (t: Throwable) {

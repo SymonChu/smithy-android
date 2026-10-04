@@ -171,7 +171,9 @@ object ManifestSetTool : Tool {
     override val spec = ToolSpec(
         name = "manifest.set",
         description = "改清单里的常用字段：应用名（APP_LABEL）、包名（PACKAGE_NAME）、" +
-            "版本名（VERSION_NAME）、版本码（VERSION_CODE）、调试开关（DEBUGGABLE）。" +
+            "版本名（VERSION_NAME）、版本码（VERSION_CODE）、调试开关（DEBUGGABLE）、" +
+            "图标引用（ICON：值形如 `@mipmap/xxx`，给空串则移除声明 —— " +
+            "清单里原本没有图标声明的包也能用它挂一个上去）。" +
             "**改包名要慎重**：它会让系统把这个包当成另一个应用（不会覆盖原应用），" +
             "而且组件名、权限、provider authority 都会受影响。",
         params = schema {
@@ -179,9 +181,15 @@ object ManifestSetTool : Tool {
                 "field",
                 "改哪个字段",
                 required = true,
-                choices = listOf("APP_LABEL", "PACKAGE_NAME", "VERSION_NAME", "VERSION_CODE", "DEBUGGABLE"),
+                choices = listOf(
+                    "APP_LABEL", "PACKAGE_NAME", "VERSION_NAME", "VERSION_CODE", "DEBUGGABLE", "ICON",
+                ),
             )
-            string("value", "新值。DEBUGGABLE 传 true/false", required = true)
+            string(
+                "value",
+                "新值。DEBUGGABLE 传 true/false；ICON 传 @mipmap/xxx（传空串则移除图标声明）",
+                required = true,
+            )
         },
         returns = "改动记录",
         effect = Effect.WRITE,

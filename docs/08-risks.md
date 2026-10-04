@@ -199,9 +199,77 @@ requestCode 与 Activity 回调）、`pm install` 在具体设备上的行为、
 
 ---
 
-## 十、M2 实测：资源层的代价与边界
+## 十、换图标：ARSCLib 能改什么、不能改什么
 
-### 10.1 两层替换的代价差 87 倍
+### 10.1 现代包没有位图图标
+
+`minSdk 26+` 的工程，AGP 只生成 adaptive icon：`res/mipmap-anydpi-v26/ic_launcher.xml`
+声明前景/背景，而前景通常是**矢量 XML**、背景是**纯色资源** —— 一个位图都没有。
+
+所以「往包里塞一张 PNG」是没用的：资源表里没有对应条目，系统找不到那张图，
+图标会变成默认的。
+
+### 10.2 普通 xml 改不动，清单能改（这次最深的坑）
+
+ARSCLib 对**普通 xml**（`loadResXmlDocument`）的行为是「读时解析、写出时回放原始字节」：
+
+- `module.getResXmlDocument(path)` **每次返回不同对象**（实测连续 6 次调用，6 个不同的 identityHashCode）
+- 改了内存里的属性值，而且**同一对象读回确实变了**
+  （`REFERENCE/2130968582 → REFERENCE/2131230721`）
+- 但 `decode` 读回的是另一个对象 → 旧值；产物里也是旧值
+- **全程不报任何错**
+
+这是最危险的一类 API：**看起来改了，其实没改，而且没有任何信号**。排查花了十几轮，
+最后是靠「同一对象读回 vs 另取一个对象读回」这组对照才定位到根因。
+
+**清单是例外**：`AndroidManifestBlock` 是 module 自己的对象，改它有效 ——
+M1 的 `setManifestField` 一直正常工作，就是这个原因。
+
+**连带发现**：M2 的 `patchXml`（改任意 xml 属性）对**普通 xml 实际不生效**，
+它的测试只覆盖了清单所以没暴露。要改普通 xml 的正确做法是**从零构造一份新的 xml 字节**
+再整条替换，而不是「读出来改对象」。这条还没实现。
+
+### 10.3 解法：新建资源 + 改清单
+
+既然清单改得动、资源表也建得动，就绕开 adaptive 声明：
+
+1. 新建 `mipmap/smithy_icon`：5 个密度各一个条目
+   （`PackageBlock.getOrCreateTypeBlock(ResConfig(dpi), "mipmap")` + `getOrCreateEntry(name)`，
+   值设成包内文件路径）
+2. `manifest.setIconResourceId(新资源 id)` 把清单的 `android:icon` 指过来
+3. 一并落盘 `resources.arsc` 与 `AndroidManifest.xml`（清单这条路径 M1 就验证过）
+
+代价是图标从 adaptive 变成传统位图（Android 8+ 上少了自适应裁切与视差），
+但这是**全部部件都验证过**的做法 —— 比赌一个行为不明的 API 靠谱得多。
+
+验证方式不是「看我们自己的账」，而是**重新打开产物问资源表**：
+`resources("mipmap", "smithy_icon")` 能查到、清单里的 `android:icon` 变了、
+包整体还能正常解析。
+
+**清单里没有 `android:icon` 的包也能设**：这类包的图标可能由主题（`android:icon` 写在 style 里）
+指定，也可能压根没设 —— 之前的实现直接报「换不了」，是错的。只要「新建图标资源 +
+把 `android:icon` 加到 `<application>`」就行：`setIconResourceId(id)` 在该属性不存在时**会新建它**
+（实测产物清单里确实出现了）。`manifest.set` 的 `ICON` 字段就是干这个的：
+值给 `@mipmap/xxx` 时先按名字查出资源 id 再写（清单里存的是引用，不是名字），
+空字符串表示移除该声明。
+
+### 10.4 架构：规划 → 画图 → 应用
+
+画图要用 Android 的 `Bitmap`（`javax.imageio` 在 Android 上不存在），
+而改包结构要用 ARSCLib —— 引擎是纯 JVM、不 import `android.*`。所以切成三步：
+
+| 步骤 | 位置 | 做什么 |
+|---|---|---|
+| `planIconReplace(): IconPlan` | 引擎 | 说清每张图的画布尺寸与**内容尺寸**（安全区） |
+| `IconReplacer.render(file, plan)` | UI 层 | 按规格画，只做「裁成方图 + 缩放 + 居中」 |
+| `applyIconReplace(rendered)` | 引擎 | 写图、新建资源、改清单 |
+
+**尺寸规则只有一处定义**（在引擎里）。换图标最容易出的问题（变形、被启动器裁掉）
+就出在尺寸上，规则散成两份必然会有一处写错。
+
+## 十一、M2 实测：资源层的代价与边界
+
+### 11.1 两层替换的代价差 87 倍
 
 同一批 200 组替换规则（30 组真命中）：
 
@@ -216,7 +284,7 @@ requestCode 与 Activity 回调）、`pm install` 在具体设备上的行为、
 **教训**：接口设计时不能只问「能不能做」，要问「代价是多少」——
 把两种代价差两个数量级的操作塞进同一个默认入口，用户会以为工具本身很慢。
 
-### 10.2 资源表改完必须仍是 STORED + 4 字节对齐
+### 11.2 资源表改完必须仍是 STORED + 4 字节对齐
 
 安装器按内存映射读 `resources.arsc`，压缩或不对齐都会被系统拒绝安装。
 ARSCLib 负责序列化，但**写出去之后是否重压缩由我们的 [ZipRebuilder] 决定**，
@@ -225,7 +293,7 @@ ARSCLib 负责序列化，但**写出去之后是否重压缩由我们的 [ZipRe
 测试里专门盯着这条 —— 它一旦破了，症状是「装机失败」而不是「值不对」，
 是最难往资源层联想的一类故障。
 
-### 10.3 改动只抽两个条目进覆盖层
+### 11.3 改动只抽两个条目进覆盖层
 
 ARSCLib 改完要写出**临时整包**才能拿到新的 `resources.arsc`。我们不拿那个包当结果，
 只从里面抽 `resources.arsc` 与 `AndroidManifest.xml` 两个条目进工作区覆盖层，
@@ -234,7 +302,7 @@ ARSCLib 改完要写出**临时整包**才能拿到新的 `resources.arsc`。我
 这样「未改动条目字节一致」这条 M1 验证过的性质得以保住 ——
 实测改完资源后，**305 个条目全部字节一致**（只有 arsc 变了）。
 
-### 10.4 包会略微变大
+### 11.4 包会略微变大
 
 改资源后 25720KB → 25867KB（+147KB，约 0.6%）。原因是 ARSCLib 重新序列化了整张资源表
 （字符串池排序与 M0 时的 AGP 产物不完全一致）。这是可接受代价，

@@ -11,9 +11,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -23,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.smithy.engine.ApkMeta
 import dev.smithy.engine.ComponentInfo
@@ -34,6 +38,14 @@ internal fun OverviewTab(
     meta: ApkMeta,
     sourceName: String,
     entryCount: Int,
+    editLabel: String,
+    editVersionName: String,
+    editVersionCode: String,
+    busy: String?,
+    onLabelChange: (String) -> Unit,
+    onVersionNameChange: (String) -> Unit,
+    onVersionCodeChange: (String) -> Unit,
+    onApplyEdits: () -> Unit,
     onExportReport: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -42,6 +54,17 @@ internal fun OverviewTab(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         HeaderCard(sourceName, entryCount, meta)
+        // 改名与改版本放在最前：这是改包最高频的两件事
+        EditCard(
+            label = editLabel,
+            versionName = editVersionName,
+            versionCode = editVersionCode,
+            busy = busy,
+            onLabel = onLabelChange,
+            onVersionName = onVersionNameChange,
+            onVersionCode = onVersionCodeChange,
+            onApply = onApplyEdits,
+        )
         SignatureCard(meta)
         DexCard(meta.dexStats)
         PermissionsCard(meta.permissions)
@@ -67,6 +90,71 @@ private fun HeaderCard(sourceName: String, entryCount: Int, m: ApkMeta) {
         KV("条目", "$entryCount 个")
         KV("文件", sourceName)
         if (m.isSplit) KV("形态", "split APK")
+    }
+}
+
+/**
+ * 改名 / 改版本。
+ *
+ * 输入框用当前值打底，只把**真正变了的**提交上去（判断在 ViewModel 里）——
+ * 否则每点一次「应用」都会在改动列表里多出三条记录，回退时要逐条退，很快就懒得用了。
+ */
+@Composable
+private fun EditCard(
+    label: String,
+    versionName: String,
+    versionCode: String,
+    busy: String?,
+    onLabel: (String) -> Unit,
+    onVersionName: (String) -> Unit,
+    onVersionCode: (String) -> Unit,
+    onApply: () -> Unit,
+) {
+    SectionCard("改名 / 改版本") {
+        EditRow("应用名", label, onLabel)
+        Spacer(Modifier.height(8.dp))
+        EditRow("版本名", versionName, onVersionName)
+        Spacer(Modifier.height(8.dp))
+        EditRow("版本码", versionCode, onVersionCode, numeric = true)
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = onApply,
+            enabled = busy == null,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(busy ?: "应用改动")
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "改完要重新打包 + 签名才生效。应用名会一并改掉启动器上显示的名字",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 一行输入：左标签 + 右输入框。 */
+@Composable
+private fun EditRow(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    numeric: Boolean = false,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(64.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onChange,
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium,
+            keyboardOptions = if (numeric) {
+                KeyboardOptions(keyboardType = KeyboardType.Number)
+            } else {
+                KeyboardOptions.Default
+            },
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 

@@ -57,10 +57,15 @@ internal object IconResolver {
         }.distinct()
 
         if (ids.isEmpty()) {
+            // 清单里没有 android:icon —— 图标可能由主题指定，也可能这个包压根没设图标。
+            // **这不是死路**：可以新建一个图标资源，再把 android:icon 加到 <application> 上
+            // （清单改得动，见 docs/08 第十节）。所以这里只报告现状，把「要不要建一个」
+            // 交给上层决定 —— 见 planIconReplace 的第二条分支
             return IconTargets(
+                declaredIcon = null,
                 notes = listOf(
-                    "这个包的清单里没有声明 android:icon / android:roundIcon。" +
-                        "图标可能是通过主题（android:icon 在 style 里）或其他方式指定的，这种情况换不了",
+                    "清单里没有声明 android:icon / android:roundIcon（图标可能由主题指定）",
+                    "可以新建一个图标资源并挂到 <application> 上",
                 ),
             )
         }
@@ -69,6 +74,9 @@ internal object IconResolver {
         // 即使最后判定「换不了」，也要记住清单声明的是什么 —— 用户看到
         // 「你的包声明的是 @mipmap/ic_launcher，但它是矢量图」才知道下一步怎么办
         var lastDeclared: String? = null
+        // 找到 adaptive 声明文件就要记下来，**不要求里面能解析出位图** ——
+        // 「只有矢量前景」的包正是这种情况，而它恰恰要靠这个路径去新建资源
+        var lastAdaptiveXml: String? = null
 
         for (id in ids) {
             val ref = runCatching { table.getResource(id) }.getOrNull() ?: continue
@@ -82,6 +90,7 @@ internal object IconResolver {
                 it.startsWith("res/mipmap-anydpi") && it.substringAfterLast('/') == "$name.xml"
             }
             if (xmlPath != null) {
+                lastAdaptiveXml = xmlPath
                 val fromXml = fromAdaptiveXml(xmlPath, allPaths, readXml)
                 if (fromXml != null) {
                     return fromXml.copy(declaredIcon = declared, adaptiveXml = xmlPath)
@@ -119,6 +128,7 @@ internal object IconResolver {
 
         return IconTargets(
             declaredIcon = lastDeclared,
+            adaptiveXml = lastAdaptiveXml,
             notes = notes.ifEmpty { listOf("没能定位到这个包的图标条目") },
         )
     }
