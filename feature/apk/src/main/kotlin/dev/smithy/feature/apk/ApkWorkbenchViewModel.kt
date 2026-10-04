@@ -350,7 +350,12 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                         busy = null,
                         workspaceState = project.state,
                         message = when {
-                            r.ok -> "已安装（通道：${viaLabel(r.via)}）${r.message?.let { m -> "· $m" } ?: ""}"
+                            // 交给安装器 ≠ 装完。说成「已安装」会让人不再去点那个确认
+                            r.ok -> if (r.pending) {
+                                r.message ?: "已交给系统安装器"
+                            } else {
+                                "已安装（通道：${viaLabel(r.via)}）"
+                            }
                             else -> r.message ?: "安装失败"
                         },
                         isError = !r.ok,

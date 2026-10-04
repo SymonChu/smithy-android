@@ -220,7 +220,18 @@ data class VerifyResult(val valid: Boolean, val schemes: List<Int>, val messages
 
 enum class InstallVia { SHIZUKU, ROOT, INTENT }
 
-data class InstallResult(val ok: Boolean, val via: InstallVia, val message: String?)
+data class InstallResult(
+    val ok: Boolean,
+    val via: InstallVia,
+    val message: String?,
+    /**
+     * 成功了，但只是**成功交给了系统安装器** —— 系统界面还在等用户点确认。
+     *
+     * 不区分这件事的话，界面会写成「已安装」：用户看到成功就不再管，而那个确认界面
+     * 还挂着 —— 他以为装好了，其实没装。系统安装器这条通道的「成功」只是「交出去了」。
+     */
+    val pending: Boolean = false,
+)
 
 data class BuildProgress(
     val stage: Stage,

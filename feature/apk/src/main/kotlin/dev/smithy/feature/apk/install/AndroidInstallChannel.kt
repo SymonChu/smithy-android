@@ -153,7 +153,15 @@ class AndroidInstallChannel(private val context: Context) : InstallChannel {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
-            InstallResult(true, InstallVia.INTENT, "已交给系统安装器，请在系统界面点确认完成安装")
+            InstallResult(
+                ok = true,
+                via = InstallVia.INTENT,
+                message = "已交给系统安装器，请在系统界面点确认完成安装",
+                // 还没装完：系统界面还等着用户点确认。
+                // 不说这件事的话，用户看到成功提示就以为装好了，而那个界面还挂着 ——
+                // 这条通道的「成功」只是「成功交出去了」
+                pending = true,
+            )
         } catch (t: Throwable) {
             InstallResult(false, InstallVia.INTENT, "无法唤起系统安装器：${t.message}")
         }
