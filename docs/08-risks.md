@@ -122,7 +122,29 @@ INSTALL_FAILED_INVALID_APK: Failed to extract native libraries, res=-2
 而这个问题在**结构层**。所以 `V1SignTest` 里补了一条直接测**产物对齐**的用例
 （扫原始字节算数据起点，`java.util.zip.ZipEntry` 的 `headerOffset` 是 JDK 内部 API，拿不到）。
 
-### 8.2 v1 签名：apksig 的路径坏了，所以自己实现了一份
+### 8.3 Kotlin 块注释里不能出现 `/*`（这个坑也踩了两次）
+
+**现象**：编译报
+
+```
+Syntax error: Missing '}'.
+Syntax error: Unclosed comment.
+```
+
+外加一串指向别处的 `Unresolved reference`（级联错误，真正的原因不在那儿）。
+
+**根因**：Kotlin 的块注释**允许嵌套**。文档注释里写 `zygisk/*.so` 或
+`lib/**/*.so` 这类 glob，其中的 `/*` 会**打开一个嵌套注释**，而它没有配对的 `*/`，
+于是后面整段代码都被当成注释吃掉。
+
+**两次的现场**：
+- `ZipRebuilder.kt` 的注释里写 `lib/**/*.so` → 报「类型推断级联失败」
+- `ModuleOps.kt` 的注释里写 `zygisk/*.so` → 报 Unclosed comment
+
+**怎么避开**：注释里别写 glob。要表达同一个意思就用文字 ——
+「zygisk 下的 so」「lib 目录下的 so」，比 `*.so` 更清楚，也不会咬人。
+
+### 8.4 v1 签名：apksig 的路径坏了，所以自己实现了一份
 
 **为什么需要 v1**：`minSdk < 24` 的包必须带 v1（JAR）签名 —— Android 7.0 之前只认它。
 只签 v2/v3 的话，包在 Android 5/6 上装不上，而 `minSdk` 声明又骗着人以为支持。
