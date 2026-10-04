@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import dev.smithy.fs.humanTime
 import dev.smithy.fs.RenameRules
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.DropdownMenu
@@ -81,6 +82,11 @@ fun FilesScreen(
     onToggleSelected: (String) -> Unit,
     onImport: () -> Unit,
     onToggleRoot: () -> Unit,
+    onCopy: () -> Unit,
+    onCut: () -> Unit,
+    onDeleteSelected: () -> Unit,
+    onPaste: () -> Unit,
+    onClearClipboard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
@@ -110,7 +116,7 @@ fun FilesScreen(
             // 并排比上下叠着更贴近它们的关系，而且互不遮挡 —— 改包时能一直看着文件列表
             Row(Modifier.weight(1f)) {
                 Column(Modifier.weight(1f)) {
-                    DirHeader(state.dir, relative, onGoUp, state.rootMode, onToggleRoot)
+                    DirHeader(state.dir, relative, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
                     FilterRow(state.filter, onFilter, onImport)
                     SelectionBar(
                         state = state,
@@ -119,6 +125,9 @@ fun FilesScreen(
                         onClear = onClearSelection,
                         onRulesChange = onRulesChange,
                         onApply = onApplyRename,
+                        onCopy = onCopy,
+                        onCut = onCut,
+                        onDelete = onDeleteSelected,
                     )
                     DirList(
                         state = state,
@@ -156,7 +165,7 @@ fun FilesScreen(
                 }
             }
         } else if (zip == null) {
-            DirHeader(state.dir, relative, onGoUp, state.rootMode, onToggleRoot)
+            DirHeader(state.dir, relative, onGoUp, state.rootMode, onToggleRoot, state.clipboard, onPaste, onClearClipboard)
             FilterRow(state.filter, onFilter, onImport)
             SelectionBar(
                 state = state,
@@ -165,6 +174,9 @@ fun FilesScreen(
                 onClear = onClearSelection,
                 onRulesChange = onRulesChange,
                 onApply = onApplyRename,
+                onCopy = onCopy,
+                onCut = onCut,
+                onDelete = onDeleteSelected,
             )
             DirList(
                 state = state,
@@ -195,12 +207,17 @@ private fun DirHeader(
     onGoUp: () -> Unit,
     rootMode: Boolean,
     onToggleRoot: () -> Unit,
+    clipboard: Clipboard?,
+    onPaste: () -> Unit,
+    onClearClipboard: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        // Column：Surface 只能有一个子元素，而这里要放两行（路径行 + 粘贴提示行）
+        Column {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
             TextButton(onClick = onGoUp) { Text("↑ 上级") }
             Text(
                 relative(dir),
@@ -213,6 +230,24 @@ private fun DirHeader(
             // 在 root 模式指系统那个），看不出来就会改错东西
             TextButton(onClick = onToggleRoot) {
                 Text(if (rootMode) "root ●" else "普通")
+            }
+            }
+            // 粘贴板有东西时，在路径下方单占一行：它是「下一步动作」，位置要显眼 ——
+            // 用户刚点了复制/剪切，下一步就是找地方贴，这时不该让他去找按钮
+            clipboard?.let { clip ->
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (clip.cut) "剪贴板：${clip.paths.size} 项（移动）" else "剪贴板：${clip.paths.size} 项（复制）",
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = onPaste) { Text("粘贴到此处") }
+                    Spacer(Modifier.width(6.dp))
+                    TextButton(onClick = onClearClipboard) { Text("取消") }
+                }
             }
         }
     }
@@ -356,6 +391,9 @@ private fun SelectionBar(
     onClear: () -> Unit,
     onRulesChange: (RenameRules) -> Unit,
     onApply: () -> Unit,
+    onCopy: () -> Unit,
+    onCut: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val plan = state.renamePlan
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
@@ -373,6 +411,21 @@ private fun SelectionBar(
             }
 
             if (!state.selecting) return@Column
+
+            // 常用动作排在改名规则前面：它们是「拿选中的东西做点什么」，
+            // 而改名规则是一套要花时间调的参数，顺序上不该抢在前面。
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(onClick = onCopy, enabled = state.selected.isNotEmpty()) { Text("复制") }
+                OutlinedButton(onClick = onCut, enabled = state.selected.isNotEmpty()) { Text("剪切") }
+                OutlinedButton(
+                    onClick = onDelete,
+                    enabled = state.selected.isNotEmpty(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("删除") }
+            }
+            Spacer(Modifier.height(6.dp))
 
             RulesEditor(state.renameRules, onRulesChange)
 

@@ -165,6 +165,11 @@ fun SmithyRoot(
                     onToggleSelected = filesVm::toggleSelected,
                     onImport = { pickImport.launch(arrayOf("*/*")) },
                     onToggleRoot = filesVm::toggleRoot,
+                    onCopy = filesVm::copySelected,
+                    onCut = filesVm::cutSelected,
+                    onDeleteSelected = filesVm::deleteSelected,
+                    onPaste = filesVm::paste,
+                    onClearClipboard = filesVm::clearClipboard,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(

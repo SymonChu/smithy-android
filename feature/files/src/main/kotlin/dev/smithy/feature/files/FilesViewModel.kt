@@ -55,6 +55,13 @@ private val BINARY_EXTS = setOf(
     "ttf", "otf", "woff", "woff2", "ogg", "mp3", "mp4", "wav", "webm", "9",
 )
 
+/**
+ * 待粘贴的条目。
+ *
+ * [cut] 为 true 是「剪切」（粘贴时移动并删源），false 是「复制」。
+ */
+data class Clipboard(val paths: List<String>, val cut: Boolean)
+
 data class FilesUiState(
     val dir: String = "",
     val items: List<FsItem> = emptyList(),
@@ -84,6 +91,11 @@ data class FilesUiState(
 
     /** 预览计划（null = 没有可改的）。 */
     val renamePlan: RenamePlan? = null,
+
+    /**
+     * 粘贴板里的东西（null = 没有）。有它的时候，目录栏上会出现「粘贴」。
+     */
+    val clipboard: Clipboard? = null,
 
     /**
      * root 模式。
@@ -130,6 +142,129 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         openDir(rootDir.absolutePath)
+    }
+
+    // ── 复制 / 移动 / 删除 ─────────────────────────────────────
+
+    /**
+     * 剪贴板：待粘贴的条目。
+     *
+     * 用「复制/剪切 → 切到目标目录 → 粘贴」这套标准交互，而不是「点复制然后弹窗选目录」：
+     * 后者要在一个对话框里浏览整个文件系统，既难做又难用，而用户对前者早就有肌肉记忆。
+     */
+    fun copySelected() {
+        val s = _state.value
+        if (s.selected.isEmpty()) return
+        val n = s.selected.size
+        _state.update { it.copy(clipboard = Clipboard(s.selected.toList(), cut = false), selecting = false, selected = emptySet(), message = "已复制 $n 项，切到目标目录后点粘贴", isError = false) }
+    }
+
+    fun cutSelected() {
+        val s = _state.value
+        if (s.selected.isEmpty()) return
+        val n = s.selected.size
+        _state.update { it.copy(clipboard = Clipboard(s.selected.toList(), cut = true), selecting = false, selected = emptySet(), message = "已剪切 $n 项，切到目标目录后点粘贴", isError = false) }
+    }
+
+    fun clearClipboard() = _state.update { it.copy(clipboard = null, message = "已取消粘贴板") }
+
+    /**
+     * 把剪贴板里的东西贴到当前目录。
+     *
+     * **同名先问，不覆盖**：粘贴是最容易毁数据的一步（目标目录里往往已经有同名文件），
+     * 所以撞名一律跳过并报出来，而不是默默覆盖。跳过而不是中止 —— 十个里撞一个，
+     * 另外九个该贴成功。
+     */
+    fun paste() {
+        val s = _state.value
+        val clip = s.clipboard ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = if (clip.cut) "移动中…" else "复制中…", message = null, isError = false) }
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    var ok = 0
+                    val skipped = mutableListOf<String>()
+                    clip.paths.forEach { from ->
+                        val name = from.trimEnd('/').substringAfterLast('/')
+                        val to = if (s.dir.endsWith("/")) s.dir + name else "${s.dir}/$name"
+                        if (from == to) { skipped += name; return@forEach }
+                        val done = if (s.rootMode) {
+                            RootFs.transfer(from, to, move = clip.cut)
+                        } else {
+                            runCatching {
+                                val src = File(from)
+                                val dst = File(to)
+                                if (dst.exists()) return@runCatching false
+                                if (clip.cut) src.renameTo(dst)
+                                else src.copyRecursively(dst, overwrite = false).let { true }
+                            }.getOrDefault(false)
+                        }
+                        if (done) ok++ else skipped += name
+                    }
+                    ok to skipped
+                }
+                val (ok, skipped) = result
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        // 剪切成功后清掉剪贴板；复制可以留着（常要贴到多处）
+                        clipboard = if (clip.cut && skipped.isEmpty()) null else it.clipboard,
+                        message = buildString {
+                            append(if (clip.cut) "移动 $ok 项" else "复制 $ok 项")
+                            if (skipped.isNotEmpty()) append("，跳过 ${skipped.size} 项（目标已存在或同名）：${skipped.take(3).joinToString("、")}")
+                        },
+                        isError = skipped.isNotEmpty(),
+                    )
+                }
+                openDir(s.dir)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /**
+     * 删除选中的条目。
+     *
+     * **界面上必须先确认**（这类动作没有回收站，删了就没了）。root 模式走 shell。
+     */
+    fun deleteSelected() {
+        val s = _state.value
+        if (s.selected.isEmpty()) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "删除中…", message = null, isError = false) }
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    var ok = 0
+                    val failed = mutableListOf<String>()
+                    s.selected.forEach { path ->
+                        val done = if (s.rootMode) {
+                            RootFs.delete(path, s.items.firstOrNull { it.path == path }?.dir ?: false)
+                        } else {
+                            runCatching { File(path).deleteRecursively() }.getOrDefault(false)
+                        }
+                        if (done) ok++ else failed += path.substringAfterLast('/')
+                    }
+                    ok to failed
+                }
+                val (ok, failed) = result
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        selecting = false,
+                        selected = emptySet(),
+                        message = buildString {
+                            append("删除 $ok 项")
+                            if (failed.isNotEmpty()) append("，${failed.size} 项失败：${failed.take(3).joinToString("、")}")
+                        },
+                        isError = failed.isNotEmpty(),
+                    )
+                }
+                openDir(s.dir)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
     }
 
     // ── 目录浏览 ────────────────────────────────────────────────
