@@ -19,6 +19,7 @@ simplemagic    = "1.17"      # VERIFY  com.j256.simplemagic:simplemagic
 zstd           = "1.5.6-6"   # VERIFY  com.github.luben:zstd-jni (@aar)
 shizuku        = "13.1.5"    # VERIFY  dev.rikka.shizuku:api / :provider
 libsu          = "5.2.2"     # VERIFY  com.github.topjohnwu.libsu:core
+commonsNet     = "3.11.0"    # VERIFY  commons-net:commons-net（Apache-2.0，FTP 客户端）
 hiddenapibypass= "4.1"       # VERIFY  org.lsposed.hiddenapibypass:hiddenapibypass
 soraEditor     = "0.23.6"    # VERIFY  io.github.Rosemoe.sora-editor（LGPL-2.1，仅以未修改库形式引用）
 okhttp         = "4.12.0"    # VERIFY
@@ -48,6 +49,7 @@ shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizu
 # 拿到 stub 就能直接调，不必去碰 IPackageInstaller 那套 hidden API。
 shizuku-aidl     = { module = "dev.rikka.shizuku:aidl", version.ref = "shizuku" }
 libsu            = { module = "com.github.topjohnwu.libsu:core", version.ref = "libsu" }
+commons-net      = { module = "commons-net:commons-net", version.ref = "commonsNet" }
 hiddenapibypass  = { module = "org.lsposed.hiddenapibypass:hiddenapibypass", version.ref = "hiddenapibypass" }
 
 # ── 编辑器（LGPL-2.1，仅以未修改库形式引用，许可页声明）──

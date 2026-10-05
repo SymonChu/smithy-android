@@ -15,6 +15,8 @@ import dev.smithy.fs.FileSearch
 import dev.smithy.fs.NavBounds
 import dev.smithy.fs.AppExtractor
 import dev.smithy.fs.TarReader
+import dev.smithy.fs.FtpSession
+import dev.smithy.fs.ZipCreator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -124,6 +126,22 @@ data class FileTab(
         get() = dir.trimEnd('/').substringAfterLast('/').ifBlank { "/" }
 }
 
+/** FTP 连接参数。只存内存：凭据落盘等于把 NAS 密码交给能读应用数据的进程。 */
+data class FtpConfig(
+    val host: String,
+    val port: Int,
+    val user: String,
+    val password: String,
+)
+
+/** FTP 浏览会话的状态（null = 没在浏览 FTP）。 */
+data class FtpBrowseState(
+    val host: String,
+    val path: String,
+    val entries: List<FtpSession.Entry>,
+    val downloading: String? = null,
+)
+
 data class FilesUiState(
     val dir: String = "",
     val items: List<FsItem> = emptyList(),
@@ -186,6 +204,9 @@ data class FilesUiState(
      * 粘贴都不该作用在它们身上 —— 和搜索结果整屏换掉是同一个理由。
      */
     val appPicker: AppPickerState? = null,
+
+    /** FTP 浏览状态（null = 没在浏览 FTP）。整屏替换本地列表，理由同上。 */
+    val ftp: FtpBrowseState? = null,
 
     /** 排序方式。目录恒在文件之前，这里只管同一类内部的顺序。 */
     val sortBy: SortBy = SortBy.NAME,
@@ -994,6 +1015,134 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
             closeZip()
             _state.update { it.copy(activeTabId = neighbor.id, properties = null, search = null) }
             openDir(neighbor.dir.ifBlank { SDCARD })
+        }
+    }
+
+    // ── FTP 网络存储 ───────────────────────────────────────────
+
+    private var ftpSession: FtpSession? = null
+    private var ftpConfig: FtpConfig? = null
+
+    /**
+     * 连接 FTP 并列出根目录。成功后进入 FTP 浏览模式（整屏替换本地列表，
+     * 和搜索结果/应用列表同一策略——那些条目不属于本地文件系统）。
+     */
+    fun connectFtp(host: String, port: Int, user: String, password: String) {
+        val cfg = FtpConfig(host.trim(), port, user.trim(), password)
+        if (cfg.host.isBlank()) {
+            _state.update { it.copy(message = "地址不能为空（如 192.168.1.10）", isError = true) }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "连接 $host…", message = null, isError = false) }
+            try {
+                val session = withContext(Dispatchers.IO) { FtpSession.connect(cfg.host, cfg.port, cfg.user, cfg.password) }
+                val entries = withContext(Dispatchers.IO) { session.list("/") }
+                ftpSession?.close()
+                ftpSession = session
+                ftpConfig = cfg
+                _state.update {
+                    it.copy(
+                        ftp = FtpBrowseState(host = cfg.host, path = "/", entries = entries),
+                        busy = null,
+                        message = "已连接 ${cfg.host}（FTP 明文传输，仅建议局域网）",
+                        isError = false,
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(busy = null, message = "FTP 连接失败：${t.message}", isError = true) }
+            }
+        }
+    }
+
+    /** 进 FTP 的某个目录。 */
+    fun ftpOpenDir(path: String) {
+        val session = ftpSession ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "读取 $path…", message = null, isError = false) }
+            try {
+                val entries = withContext(Dispatchers.IO) { session.list(path) }
+                _state.update {
+                    it.copy(
+                        ftp = it.ftp?.copy(path = path, entries = entries),
+                        busy = null,
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(busy = null, message = "列目录失败：${t.message}", isError = true) }
+            }
+        }
+    }
+
+    /** 下载一个远端文件到**当前本地目录**。 */
+    fun ftpDownload(entry: FtpSession.Entry) {
+        val session = ftpSession ?: return
+        val localDir = _state.value.dir
+        viewModelScope.launch {
+            _state.update { it.copy(ftp = it.ftp?.copy(downloading = entry.name), message = null, isError = false) }
+            try {
+                val target = withContext(Dispatchers.IO) {
+                    var f = File(localDir, entry.name)
+                    var i = 1
+                    while (f.exists()) {   // 不覆盖：和粘贴/提取同一规则
+                        f = File(localDir, entry.name.substringBeforeLast('.') + "($i)." + entry.name.substringAfterLast('.', ""))
+                        i++
+                    }
+                    session.download(entry.path, f, entry.size)
+                }
+                _state.update {
+                    it.copy(
+                        ftp = it.ftp?.copy(downloading = null),
+                        message = "已下载 ${entry.name} → $localDir",
+                        isError = false,
+                    )
+                }
+                openDir(localDir)
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(ftp = it.ftp?.copy(downloading = null), message = "下载失败：${t.message}", isError = true)
+                }
+            }
+        }
+    }
+
+    /** 断开 FTP，回到本地浏览。 */
+    fun disconnectFtp() {
+        runCatching { ftpSession?.close() }
+        ftpSession = null
+        ftpConfig = null
+        _state.update { it.copy(ftp = null, message = "已断开 FTP", isError = false) }
+    }
+
+    /**
+     * 把多选的条目打包成一个 zip，落在当前目录。
+     *
+     * 覆盖确认放在界面层（弹 ConfirmDialog 后才调这里）；
+     * 这里的职责是执行 + 报告。
+     */
+    fun zipSelected(targetName: String) {
+        val s = _state.value
+        val selected = s.selected.toList()
+        if (selected.isEmpty()) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "打包中…", message = null, isError = false) }
+            try {
+                val report = withContext(Dispatchers.IO) {
+                    val target = File(s.dir, targetName)
+                    ZipCreator.create(selected.map { File(it) }, target)
+                }
+                toggleSelecting()
+                openDir(s.dir)
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        message = "已打包 ${report.fileCount} 个文件 → ${report.target.name}（${humanSize(report.bytes)}）",
+                        isError = false,
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(busy = null, message = "打包失败：${t.message}", isError = true) }
+            }
         }
     }
 

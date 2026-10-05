@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import dev.smithy.fs.FileKind
 import dev.smithy.fs.FsItem
 import dev.smithy.fs.humanSize
 import dev.smithy.fs.humanTime
@@ -127,6 +128,11 @@ fun FilesScreen(
     onNewTab: () -> Unit,
     onSelectTab: (Long) -> Unit,
     onCloseTab: (Long) -> Unit,
+    onZipSelected: (String) -> Unit,
+    onConnectFtp: (String, Int, String, String) -> Unit,
+    onFtpOpenDir: (String) -> Unit,
+    onFtpDownload: (dev.smithy.fs.FtpSession.Entry) -> Unit,
+    onFtpDisconnect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
@@ -145,6 +151,8 @@ fun FilesScreen(
     // 正在改权限的那个路径（null = 没在改）
     var chmodTarget by remember { mutableStateOf<String?>(null) }
     var chownTarget by remember { mutableStateOf<String?>(null) }
+    // FTP 连接对话框的开关（连接动作在 FtpDialog 里组装参数后回调）
+    var showFtpDialog by remember { mutableStateOf(false) }
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
     // 把列表留在旁边只会把行宽挤到看不清
     state.editingPath?.let { path ->
@@ -198,6 +206,17 @@ fun FilesScreen(
         )
     }
 
+    // FTP 连接：参数只进内存（VM 不落盘），匿名登录留空用户名密码即可
+    if (showFtpDialog) {
+        FtpDialog(
+            onConnect = { host, port, user, pass ->
+                showFtpDialog = false
+                onConnectFtp(host, port, user, pass)
+            },
+            onDismiss = { showFtpDialog = false },
+        )
+    }
+
     // 改属主。预填「当前属主:当前属组」—— 三个合法形态里最常用的是在此基础上改
     chownTarget?.let { path ->
         TextInputDialog(
@@ -238,6 +257,17 @@ fun FilesScreen(
             onNew = onNewTab,
         )
 
+        // FTP 浏览：整屏替换（远端条目不属于本地文件系统）
+        state.ftp?.let { ftp ->
+            FtpScreen(
+                ftp,
+                onOpenDir = onFtpOpenDir,
+                onDownload = onFtpDownload,
+                onDisconnect = onFtpDisconnect,
+            )
+            return@Column
+        }
+
         // 「从设备提取应用」：整屏替换（那些条目不属于文件系统，多选/粘贴
         // 不该作用在它们身上 —— 和搜索结果同一策略）
         state.appPicker?.let { picker ->
@@ -274,6 +304,7 @@ fun FilesScreen(
                                 searching = searching,
                                 onImport = onImport,
                                 onExtractApp = onOpenAppPicker,
+                                onFtp = { showFtpDialog = true },
                                 onToggleSearch = {
                                     // 关掉搜索时**把结果也清掉**：只藏起搜索条、留着那屏
                                     // 结果的活，用户会以为自己正站在某个目录里
@@ -324,6 +355,7 @@ fun FilesScreen(
                         onCopy = onCopy,
                         onCut = onCut,
                         onDelete = onDeleteSelected,
+                        onZip = onZipSelected,
                     )
                     DirList(
                         state = state,
@@ -383,6 +415,7 @@ fun FilesScreen(
                                 searching = searching,
                                 onImport = onImport,
                                 onExtractApp = onOpenAppPicker,
+                                onFtp = { showFtpDialog = true },
                                 onToggleSearch = {
                                     // 关掉搜索时**把结果也清掉**：只藏起搜索条、留着那屏
                                     // 结果的活，用户会以为自己正站在某个目录里
@@ -431,6 +464,7 @@ fun FilesScreen(
                 onCopy = onCopy,
                 onCut = onCut,
                 onDelete = onDeleteSelected,
+                onZip = onZipSelected,
             )
             DirList(
                 state = state,
@@ -793,7 +827,7 @@ private fun SearchHits(hits: List<FsItem>, onReveal: (FsItem) -> Unit) {
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        (if (item.dir) "📁 " else "📄 ") + item.name,
+                        FileKind.of(item.name, item.dir).emoji + " " + item.name,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
@@ -828,6 +862,7 @@ private fun MoreMenu(
     onImport: () -> Unit,
     onToggleSearch: () -> Unit,
     onExtractApp: () -> Unit,
+    onFtp: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
     Box {
@@ -849,6 +884,10 @@ private fun MoreMenu(
             DropdownMenuItem(
                 text = { Text("从设备提取应用") },
                 onClick = { open = false; onExtractApp() },
+            )
+            DropdownMenuItem(
+                text = { Text("FTP 网络存储") },
+                onClick = { open = false; onFtp() },
             )
         }
     }
@@ -913,7 +952,7 @@ private fun DirList(
                     }
                     Column(Modifier.weight(1f)) {
                         Text(
-                            (if (item.dir) "📁 " else "📄 ") + item.name,
+                            FileKind.of(item.name, item.dir).emoji + " " + item.name,
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         if (!item.dir && item.maybeZip) {
@@ -1008,7 +1047,9 @@ private fun SelectionBar(
     onCopy: () -> Unit,
     onCut: () -> Unit,
     onDelete: () -> Unit,
+    onZip: (String) -> Unit,
 ) {
+    var zipping by remember { mutableStateOf(false) }
     val plan = state.renamePlan
     // 只在多选中显示。非多选时整栏都不该占位置 ——
     // 进多选的入口是**长按文件弹菜单**，而不是一个常驻按钮
@@ -1030,6 +1071,7 @@ private fun SelectionBar(
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(onClick = onCopy, enabled = state.selected.isNotEmpty()) { Text("复制") }
                 OutlinedButton(onClick = onCut, enabled = state.selected.isNotEmpty()) { Text("剪切") }
+                OutlinedButton(onClick = { zipping = true }, enabled = state.selected.isNotEmpty()) { Text("打包 zip") }
                 OutlinedButton(
                     onClick = onDelete,
                     enabled = state.selected.isNotEmpty(),
@@ -1039,6 +1081,19 @@ private fun SelectionBar(
                 ) { Text("删除") }
             }
             Spacer(Modifier.height(6.dp))
+
+            // 打包：问名字（默认 archive.zip），目标已存在时 VM 会拒绝并说明
+            if (zipping) {
+                TextInputDialog(
+                    title = "打包为 zip（存到当前目录）",
+                    initial = "archive.zip",
+                    onConfirm = { name ->
+                        zipping = false
+                        onZip(name)
+                    },
+                    onDismiss = { zipping = false },
+                )
+            }
 
             RulesEditor(state.renameRules, onRulesChange)
 
@@ -1549,6 +1604,138 @@ private fun TabStrip(
                     .padding(horizontal = 10.dp, vertical = 4.dp),
                 color = MaterialTheme.colorScheme.primary,
             )
+        }
+    }
+}
+
+/** FTP 连接参数对话框。匿名登录：用户名填 anonymous、密码随便。 */
+@Composable
+private fun FtpDialog(
+    onConnect: (host: String, port: Int, user: String, password: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var host by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("21") }
+    var user by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("连接 FTP") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    singleLine = true,
+                    label = { Text("地址（如 192.168.1.10）") },
+                )
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = { port = it.filter { c -> c.isDigit() } },
+                    singleLine = true,
+                    label = { Text("端口（默认 21）") },
+                )
+                OutlinedTextField(
+                    value = user,
+                    onValueChange = { user = it },
+                    singleLine = true,
+                    label = { Text("用户名（匿名填 anonymous）") },
+                )
+                OutlinedTextField(
+                    value = pass,
+                    onValueChange = { pass = it },
+                    singleLine = true,
+                    label = { Text("密码") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                )
+                Text(
+                    "凭据只在本次连接内使用，不会保存。FTP 是明文协议，只建议在局域网用",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConnect(host, port.toIntOrNull() ?: 21, user, pass) },
+                enabled = host.isNotBlank(),
+            ) { Text("连接") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
+}
+
+/**
+ * FTP 浏览屏。
+ *
+ * 和本地列表的交互刻意保持一致（点目录进、点文件下载），但**只读**：
+ * 上传/删除涉及服务端写权限与并发冲突，第一版不做半吊子。
+ * 每行右侧「下载」把文件拉到断开前的本地目录。
+ */
+@Composable
+private fun FtpScreen(
+    ftp: FtpBrowseState,
+    onOpenDir: (String) -> Unit,
+    onDownload: (dev.smithy.fs.FtpSession.Entry) -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("FTP · ${ftp.host}", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    ftp.path,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onDisconnect) { Text("断开") }
+        }
+        if (ftp.entries.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("这个目录是空的", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            return@Column
+        }
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(ftp.entries, key = { it.path }) { e ->
+                Row(
+                    Modifier.fillMaxWidth().clickable {
+                        if (e.dir) onOpenDir(e.path) else onDownload(e)
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        FileKind.of(e.name, e.dir).emoji + " " + e.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                    )
+                    if (e.dir) {
+                        Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        Text(
+                            if (ftp.downloading == e.name) "下载中…" else humanSize(e.size),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = SmithyMono,
+                            color = if (ftp.downloading == e.name) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                }
+                HorizontalDivider()
+            }
         }
     }
 }

@@ -261,6 +261,11 @@ fun SmithyRoot(
                     onNewTab = { filesVm.newTab() },
                     onSelectTab = filesVm::selectTab,
                     onCloseTab = filesVm::closeTab,
+                    onZipSelected = filesVm::zipSelected,
+                    onConnectFtp = { h, p, u, pw -> filesVm.connectFtp(h, p, u, pw) },
+                    onFtpOpenDir = filesVm::ftpOpenDir,
+                    onFtpDownload = filesVm::ftpDownload,
+                    onFtpDisconnect = filesVm::disconnectFtp,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(
