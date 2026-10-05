@@ -112,7 +112,7 @@ data class AppPickerState(
 
 /**
  * 文件管理器的一个标签。每个标签只隔离**浏览位置**：A 标签在 `/data`、
- * B 标签在 `/storage/sdcard0/Download`，切回来还在原地。
+ * B 标签在 `/storage/emulated/0/Download`，切回来还在原地。
  *
  * zip / hex / 属性这些模态状态**不**按标签隔离：它们是「正在进行的操作」，
  * 切标签时关掉（关 zip 顺带丢掉未保存的改动会有提示，见 closeTab）。
@@ -276,12 +276,17 @@ data class HexState(
 private const val HEX_WINDOW = 4096
 
 /**
- * 用户的共享存储。用 `/sdcard` 这个路径而不是 `Environment.getExternalStorageDirectory()`：
- * 后者在部分设备上返回 `/storage/emulated/0`。统一用 `/storage/sdcard0`
- * （真实挂载点）：用户指定认这个路径，且它是实体目录而不是软链，
- * root shell 在它上面的行为最可预期。
+ * 用户的共享存储——**按访问模式给不同路径**：
+ *
+ * - root shell 的挂载命名空间里是 `/storage/emulated/0`（真实挂载点），
+ *   `/sdcard` 那条软链在 root `ls` 下有时解析得不如实体路径干净；
+ * - 应用进程自己的 File API 视图是 `/storage/sdcard0`（各 ROM 指向
+ *   emulated/0 的另一个名字），非 root 时用这个才读得到。
+ *
+ * 同一块存储的两个名字——不是谁对谁错，是**视图不同**，跟着模式走就都对。
  */
-private const val SDCARD = "/storage/sdcard0"
+private fun sharedStorageRoot(root: Boolean): String =
+    if (root) "/storage/emulated/0" else "/storage/sdcard0"
 
 /**
  * 文件管理 + zip 直改。
@@ -345,7 +350,7 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         // 已经能看 /sdcard 了却还待在应用沙盒里 → 挪过去。
         // 只在「还在沙盒」时挪，免得把用户自己切到的目录顶掉
         if (canSeeFiles && cur.dir.startsWith(rootDir.absolutePath)) {
-            openDir(SDCARD)
+            openDir(sharedStorageRoot(root = false))
         }
     }
 
@@ -957,7 +962,8 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
      *
      * 标签数上限 6：再多了标签条要横向滚很久，那不是多标签是收藏夹。
      */
-    fun newTab(startDir: String = SDCARD) {
+    fun newTab(startDir: String? = null) {
+        val start = startDir ?: sharedStorageRoot(_state.value.rootMode)
         val s = _state.value
         if (s.tabs.size >= 6) {
             _state.update { it.copy(message = "最多 6 个标签", isError = false) }
@@ -968,13 +974,13 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         closeZip()
         _state.update {
             it.copy(
-                tabs = it.tabs + FileTab(id = id, dir = startDir),
+                tabs = it.tabs + FileTab(id = id, dir = start),
                 activeTabId = id,
                 properties = null,
                 search = null,
             )
         }
-        openDir(startDir)
+        openDir(start)
     }
 
     /** 切到某个标签。该标签记住自己上次在哪个目录，回去时恢复。 */
@@ -989,7 +995,7 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         if (target.dir.isNotBlank()) {
             openDir(target.dir)
         } else {
-            openDir(SDCARD)
+            openDir(sharedStorageRoot(_state.value.rootMode))
         }
     }
 
@@ -1014,7 +1020,7 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
             val neighbor = remaining.getOrNull(idx - 1) ?: remaining.first()
             closeZip()
             _state.update { it.copy(activeTabId = neighbor.id, properties = null, search = null) }
-            openDir(neighbor.dir.ifBlank { SDCARD })
+            openDir(neighbor.dir.ifBlank { sharedStorageRoot(_state.value.rootMode) })
         }
     }
 
@@ -1752,7 +1758,7 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val src = File(current.path)
                 val baseName = src.name.substringBefore(".tar").ifBlank { "tar-out" }
-                val targetDir = File(src.parentFile ?: File("/storage/sdcard0"), baseName)
+                val targetDir = File(src.parentFile ?: File(sharedStorageRoot(_state.value.rootMode)), baseName)
                 val files = withContext(Dispatchers.IO) {
                     targetDir.mkdirs()
                     TarReader.extractAll(src, targetDir)
@@ -1859,17 +1865,19 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 常用的几个位置，做成快捷入口。
      *
-     * 「内部存储」给 `/storage/sdcard0`（真实挂载点）而不是 `/sdcard`：
-     * 后者是指向它的符号链接，某些 ROM 的 root shell 在 `/sdcard` 上的行为
-     * （权限、软链解析）和真实路径不一致 —— 按用户指定的真实路径走，少一层间接。
+     * 「内部存储 / 下载」按当前模式给对应视图的路径（见 [sharedStorageRoot]）——
+     * 快捷入口的意义是「点了就能用」，指到一个当前模式下读不到的路径就没意义了。
      */
-    fun shortcuts(): List<Pair<String, String>> = listOf(
-        "内部存储" to "/storage/sdcard0",
-        "下载" to "/storage/sdcard0/Download",
-        "根目录" to "/",
-        "模块目录" to "/data/adb/modules",
-        "应用数据" to "/data/data",
-    )
+    fun shortcuts(): List<Pair<String, String>> {
+        val sd = sharedStorageRoot(_state.value.rootMode)
+        return listOf(
+            "内部存储" to sd,
+            "下载" to "$sd/Download",
+            "根目录" to "/",
+            "模块目录" to "/data/adb/modules",
+            "应用数据" to "/data/data",
+        )
+    }
 }
 
 fun humanSize(bytes: Long): String = when {

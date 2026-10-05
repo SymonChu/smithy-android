@@ -247,15 +247,6 @@ fun FilesScreen(
     Column(modifier.fillMaxSize()) {
         val zip = state.zip
 
-        // 标签条：最顶上。它在路径栏之上 —— 标签是「我在哪个会话」，
-        // 路径栏是「这个会话里我在哪」，层级从外到内
-        TabStrip(
-            tabs = state.tabs,
-            activeTabId = state.activeTabId,
-            onSelect = onSelectTab,
-            onClose = onCloseTab,
-            onNew = onNewTab,
-        )
 
         // FTP 浏览：整屏替换（远端条目不属于本地文件系统）
         state.ftp?.let { ftp ->
@@ -489,6 +480,16 @@ fun FilesScreen(
             ZipActions(zip, onCloseZip, onSaveZip, onExtractTar)
         }
 
+
+        // 标签条放**底部**（消息栏之上、贴着底栏）：子标签是「切换会话」的动作，
+        // 拇指最容易够到的位置就是它该在的位置；顶部留给「当前在哪」的路径信息
+        TabStrip(
+            tabs = state.tabs,
+            activeTabId = state.activeTabId,
+            onSelect = onSelectTab,
+            onClose = onCloseTab,
+            onNew = onNewTab,
+        )
         state.message?.let { MessageBar(it, state.isError) }
     }
 }
