@@ -13,6 +13,8 @@ import dev.smithy.fs.HexEdit
 import dev.smithy.fs.FsItem
 import dev.smithy.fs.FileSearch
 import dev.smithy.fs.NavBounds
+import dev.smithy.fs.AppExtractor
+import dev.smithy.fs.TarReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +36,10 @@ import java.io.File
  */
 val FsItem.maybeZip: Boolean
     get() = !dir && name.substringAfterLast('.', "").lowercase() in ZIP_EXTS
+
+/** 能被当「归档」打开的全部扩展名（zip 系 + tar 系）。 */
+val FsItem.maybeArchive: Boolean
+    get() = maybeZip || TarReader.handles(name)
 
 private val ZIP_EXTS = setOf("zip", "apk", "jar", "apks", "xapk")
 
@@ -68,6 +74,8 @@ data class ZipUiState(
     /** 条目 → 改动说明（「替换 1.2KB」「删除」）。攒在内存里，保存时才写。 */
     val changes: Map<String, String> = emptyMap(),
     val saving: Boolean = false,
+    /** tar 系（只读浏览，「保存」= 解压整档）。 */
+    val isTar: Boolean = false,
 )
 
 /** 已知的二进制扩展名 —— 这些条目不当文本编辑。 */
@@ -88,12 +96,17 @@ enum class SortBy(val label: String) {
     TIME("时间"),
 }
 
-/**
- * 待粘贴的条目。
- *
- * [cut] 为 true 是「剪切」（粘贴时移动并删源），false 是「复制」。
- */
+/** 待粘贴的条目。 [cut] 为 true 是「剪切」（粘贴时移动并删源），false 是「复制」。 */
 data class Clipboard(val paths: List<String>, val cut: Boolean)
+
+/** 「从设备提取应用」屏的状态。 */
+data class AppPickerState(
+    val apps: List<AppExtractor.AppInfo> = emptyList(),
+    val loading: Boolean = false,
+    /** 关键词过滤（按显示名/包名）。 */
+    val query: String = "",
+    val includeSystem: Boolean = false,
+)
 
 data class FilesUiState(
     val dir: String = "",
@@ -141,6 +154,14 @@ data class FilesUiState(
      * 粘贴板里的东西（null = 没有）。有它的时候，目录栏上会出现「粘贴」。
      */
     val clipboard: Clipboard? = null,
+
+    /**
+     * 「从设备提取应用」列表（null = 没打开这个界面）。
+     *
+     * 独立成屏而不是塞进目录列表：那些不是文件系统的条目，多选/删除/
+     * 粘贴都不该作用在它们身上 —— 和搜索结果整屏换掉是同一个理由。
+     */
+    val appPicker: AppPickerState? = null,
 
     /** 排序方式。目录恒在文件之前，这里只管同一类内部的顺序。 */
     val sortBy: SortBy = SortBy.NAME,
@@ -744,6 +765,130 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 改属主/属组（root 专属）。
+     *
+     * 格式三选一：`root`、`root:shell`、`:shell`（只改组）。和 [chmod] 一样，
+     * 挡在 VM 而不是丢给 shell —— 数值 uid 拼错一个数字就静默把文件给了
+     * 不存在的 uid，那种「成功」比失败更糟。
+     */
+    fun chown(path: String, owner: String) {
+        val s = _state.value
+        if (!s.rootMode) {
+            _state.update { it.copy(message = "改属主需要 root 模式", isError = true) }
+            return
+        }
+        if (!Regex("^[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?$|^:[A-Za-z_][A-Za-z0-9_.-]*$").matches(owner)) {
+            _state.update {
+                it.copy(message = "属主写名字，如 root、root:shell 或 :shell（只改组）", isError = true)
+            }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "改属主…", message = null, isError = false) }
+            try {
+                val ok = withContext(Dispatchers.IO) { RootFs.chown(path, owner) }
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        message = if (ok) "属主已改为 $owner" else "改属主失败（名字可能不存在，或文件在只读挂载上）",
+                        isError = !ok,
+                    )
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    // ── 从设备提取应用 ─────────────────────────────────────────
+
+    /** 打开「已装应用」列表。 */
+    fun openAppPicker() {
+        _state.update { it.copy(appPicker = AppPickerState(loading = true), message = null, isError = false) }
+        viewModelScope.launch {
+            try {
+                val apps = withContext(Dispatchers.IO) {
+                    AppExtractor(getApplication()).list(_state.value.appPicker?.includeSystem ?: false)
+                }
+                _state.update { it.copy(appPicker = it.appPicker?.copy(apps = apps, loading = false)) }
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(appPicker = it.appPicker?.copy(loading = false), message = "读应用列表失败：${t.message}", isError = true)
+                }
+            }
+        }
+    }
+
+    fun closeAppPicker() {
+        _state.update { it.copy(appPicker = null) }
+    }
+
+    /** 过滤关键词。只影响显示，不重查 PM。 */
+    fun filterApps(q: String) {
+        _state.update { it.copy(appPicker = it.appPicker?.copy(query = q)) }
+    }
+
+    /** 切「含系统应用」—— 要重查（纯系统应用默认根本没列进来）。 */
+    fun toggleSystemApps() {
+        val next = !(_state.value.appPicker?.includeSystem ?: false)
+        _state.update { it.copy(appPicker = it.appPicker?.copy(includeSystem = next, loading = true)) }
+        viewModelScope.launch {
+            try {
+                val apps = withContext(Dispatchers.IO) { AppExtractor(getApplication()).list(next) }
+                _state.update { it.copy(appPicker = it.appPicker?.copy(apps = apps, loading = false)) }
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(appPicker = it.appPicker?.copy(loading = false), message = "读应用列表失败：${t.message}", isError = true)
+                }
+            }
+        }
+    }
+
+    /**
+     * 把选中的应用 APK 提取到**当前目录**。
+     *
+     * 当前目录可能是 root 路径 —— 那样要写进 `/data/...`，普通 IO 会失败，
+     * root 模式下走 [RootFs.write]。同名不覆盖（提取的是留档，覆盖上次留档
+     * 是拿方便换丢东西）。
+     */
+    fun extractApp(app: AppExtractor.AppInfo) {
+        val s = _state.value
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "提取 ${app.label}…", message = null, isError = false) }
+            try {
+                val outFiles = withContext(Dispatchers.IO) {
+                    if (s.rootMode) {
+                        // root 路径：拷到缓存再 RootFs.write 过去（和 zip 保存同一条路）
+                        val tmpDir = File(getApplication<Application>().cacheDir, "app-extract")
+                        tmpDir.mkdirs()
+                        val files = AppExtractor(getApplication()).extract(app, tmpDir)
+                        files.forEach { f ->
+                            val target = File(s.dir, f.name)
+                            val ok = RootFs.write(target.absolutePath, f.readBytes())
+                            if (!ok) throw IllegalArgumentException("写不进 ${s.dir}（只读挂载？）")
+                        }
+                        files
+                    } else {
+                        AppExtractor(getApplication()).extract(app, File(s.dir))
+                    }
+                }
+                closeAppPicker()
+                openDir(s.dir)
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        message = "已提取 ${outFiles.size} 个文件到当前目录（base" +
+                            (if (app.splits.isNotEmpty()) " + ${app.splits.size} split" else "") + "）",
+                        isError = false,
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(busy = null, message = "提取失败：${t.message}", isError = true) }
+            }
+        }
+    }
+
     /** 拼一个子路径，处理两边可能已经/没有带斜杠的情况。 */
     private fun joinPath(dir: String, name: String): String =
         (if (dir.endsWith("/")) dir else "$dir/") + name
@@ -1170,6 +1315,20 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
             openDir(item.path)
             return
         }
+        // 7z / rar：认出来但明确说支持不了 —— 「点了没反应」是最差的失败形态
+        if (TarReader.isUnsupportedArchive(item.name)) {
+            _state.update {
+                it.copy(
+                    message = "${item.name}：7z / rar 暂不支持（解析器太重）。zip / apk / jar / tar / tar.gz 都能开",
+                    isError = true,
+                )
+            }
+            return
+        }
+        if (TarReader.handles(item.name)) {
+            openTar(item)
+            return
+        }
         if (!item.maybeZip) {
             _state.update {
                 it.copy(message = "${item.name}：文本编辑器在下一步做，暂时只能浏览和改压缩包", isError = false)
@@ -1186,6 +1345,34 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(zip = ZipUiState(item.path, entries), busy = null) }
             } catch (t: Throwable) {
                 fail(t)
+            }
+        }
+    }
+
+    /** tar / tar.gz：只读浏览 + 整档解压。复用 zip 的展示（ZipEntryInfo 有同构字段）。 */
+    private fun openTar(item: FsItem) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "打开 tar…", message = null, isError = false) }
+            try {
+                closeZip()
+                val entries = withContext(Dispatchers.IO) {
+                    TarReader.list(File(item.path)).map {
+                        // tar 没有「压缩后大小/加密方式」，同构字段填合理值
+                        ZipEntryInfo(it.path, it.size, it.size, 0, -1, it.dir)
+                    }
+                }
+                _state.update {
+                    it.copy(
+                        zip = ZipUiState(item.path, entries).copy(isTar = true),
+                        busy = null,
+                        message = "tar 是只读浏览；「保存」会把整档解压到同目录的文件夹里",
+                        isError = false,
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(busy = null, message = "打不开这个 tar：${t.message}", isError = true)
+                }
             }
         }
     }
@@ -1254,8 +1441,14 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun saveZipToUri(uri: android.net.Uri) {
         viewModelScope.launch {
-            val editor = zipEditor ?: return@launch
             val current = _state.value.zip ?: return@launch
+            // tar：没有编辑器，「保存」= 解压整档到所选位置附近。SAF 给的是 URI，
+            // 而解压要目录 —— tar 走独立的 extractTarAs，别把两套语义搅在一起
+            if (current.isTar) {
+                _state.update { it.copy(message = "tar 请用「解压到…」（解压需要目录，不是单个文件位置）", isError = true) }
+                return@launch
+            }
+            val editor = zipEditor ?: return@launch
             _state.update { it.copy(zip = it.zip?.copy(saving = true), message = null, isError = false) }
             val tmp = File(
                 getApplication<Application>().cacheDir,
@@ -1284,6 +1477,36 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
                 fail(t)
             } finally {
                 tmp.delete()
+            }
+        }
+    }
+
+    /**
+     * tar 的「解压到…」：解到 tar 所在目录下的同名文件夹（`x.tar.gz` → `x/`）。
+     *
+     * 不弹目录选择器：解压目标 99% 是「就在旁边」，而 SAF 的目录树授权
+     * 对 root 路径根本不适用。已存在的文件跳过（和粘贴同一规则）。
+     */
+    fun extractTarHere() {
+        val current = _state.value.zip ?: return
+        if (!current.isTar) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "解压 tar…", message = null, isError = false) }
+            try {
+                val src = File(current.path)
+                val baseName = src.name.substringBefore(".tar").ifBlank { "tar-out" }
+                val targetDir = File(src.parentFile ?: File("/sdcard"), baseName)
+                val files = withContext(Dispatchers.IO) {
+                    targetDir.mkdirs()
+                    TarReader.extractAll(src, targetDir)
+                }
+                closeZip()
+                openDir(targetDir.absolutePath)
+                _state.update {
+                    it.copy(busy = null, message = "解出 ${files.size} 个文件 → ${targetDir.name}/", isError = false)
+                }
+            } catch (t: Throwable) {
+                _state.update { it.copy(busy = null, message = "解压失败：${t.message}", isError = true) }
             }
         }
     }

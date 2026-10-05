@@ -1,6 +1,8 @@
 package dev.smithy.feature.chat
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,10 +21,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import dev.smithy.design.SmithyMono
 import dev.smithy.design.SmithySpacing
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 /**
@@ -129,25 +136,57 @@ private fun TopBar(
             Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text("对话", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text(
-                    buildString {
-                        append(workspaceName?.let { "正在操作：$it" } ?: "没有打开包（先去工作台选一个）")
-                        if (trustWrites) append("　·　信任模式：写入不问")
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when {
-                        workspaceName == null -> MaterialTheme.colorScheme.error
-                        trustWrites -> MaterialTheme.colorScheme.primary
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
+            // 「在操作哪个包」是这一页最重要的上下文（AI 的每个写操作都作用在它上面），
+            // 所以给它一块**绑定卡**而不是一行小字：看不出来时用户会以为 AI 在瞎改
+            Surface(
+                color = if (workspaceName == null) {
+                    MaterialTheme.colorScheme.errorContainer
+                } else {
+                    MaterialTheme.colorScheme.primaryContainer
+                },
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.weight(1f),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (workspaceName == null) "⚠" else "📦",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            workspaceName ?: "没有打开包",
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            fontFamily = if (workspaceName == null) FontFamily.Default else SmithyMono,
+                            color = if (workspaceName == null) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            },
+                        )
+                        Text(
+                            buildString {
+                                append(if (workspaceName == null) "先去工作台选一个" else "已绑定")
+                                if (trustWrites) append("  ·  信任模式：写入不问")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (workspaceName == null) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    if (running) {
+                        CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                    }
+                }
             }
-            if (running) {
-                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(10.dp))
-            }
+            Spacer(Modifier.width(6.dp))
             TextButton(onClick = onAttach) { Text(if (workspaceName == null) "选包" else "换包") }
             TextButton(onClick = onClear) { Text("清空") }
         }
@@ -187,15 +226,26 @@ private fun Item(item: ChatItem) = when (item) {
     is ChatItem.Confirm -> Unit    // 确认条固定在底部，不在列表里重复显示
 }
 
+/**
+ * 用户消息：右侧**窄胶囊**。
+ *
+ * 0.75 宽而不是 0.85、圆角把右下角收成 4dp（指向发送者）—— 这是在说
+ * 「这句是你说的话」。而 AI 那条是**全宽**：它的内容常常是路径、diff、
+ * 多步说明，塞进窄气泡里会折成很难读的一长条。
+ */
 @Composable
 private fun UserBubble(text: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Surface(
             color = MaterialTheme.colorScheme.primaryContainer,
-            shape = MaterialTheme.shapes.medium,
-            modifier = Modifier.fillMaxWidth(0.85f),
+            shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp),
+            modifier = Modifier.fillMaxWidth(0.78f),
         ) {
-            Text(text, modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
     }
 }
@@ -211,12 +261,16 @@ private fun AssistantBubble(item: ChatItem.Assistant) {
     // 流式输出期间不折叠：一边出字一边变矮会很跳，读起来难受
     val collapsible = !item.streaming && lines > COLLAPSE_LINES
 
+    // 全宽 + 描边气泡：AI 的回答是这一页的正文，不跟用户消息挤在同一侧。
+    // surfaceContainer 底 + outlineVariant 描边（而不是纯色块）—— 长回答
+    // 大色块会显得很重，描边只勾出边界
     Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(4.dp, 16.dp, 16.dp, 16.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(10.dp)) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Row {
                 Text(
                     item.text,
@@ -242,48 +296,65 @@ private fun AssistantBubble(item: ChatItem.Assistant) {
     }
 }
 
-/** 工具调用卡片。点一下展开参数 —— 参数常是 JSON，不展开太占地方。 */
+/**
+ * 工具调用卡片。点一下展开参数 —— 参数常是 JSON，不展开太占地方。
+ *
+ * 表头用等宽字 + 状态色（✓ / ✗ / ⏳），「改了什么」的 diff 逐行上色 ——
+ * 这是「AI 干了什么，用户看得见」的落点，也是决定要不要回退的依据。
+ */
 @Composable
 private fun ToolCard(item: ChatItem.Tool) {
     var expanded by remember { mutableStateOf(false) }
+    val failed = item.state == ChatItem.Tool.State.FAILED
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = MaterialTheme.colorScheme.surface,
         shape = MaterialTheme.shapes.small,
+        border = BorderStroke(
+            1.dp,
+            if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant,
+        ),
         modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
     ) {
-        Column(Modifier.padding(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    when (item.state) {
-                        ChatItem.Tool.State.RUNNING -> "⏳"
-                        ChatItem.Tool.State.OK -> "✓"
-                        ChatItem.Tool.State.FAILED -> "✗"
-                    },
-                    color = when (item.state) {
-                        ChatItem.Tool.State.FAILED -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.primary
-                    },
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    item.name,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontFamily = FontFamily.Monospace,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    if (expanded) "收起" else "参数",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        Column {
+            // 表头块：和正文有底色差，一眼分得清「这是工具调用不是 AI 说的话」
+            Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        when (item.state) {
+                            ChatItem.Tool.State.RUNNING -> "⏳"
+                            ChatItem.Tool.State.OK -> "✓"
+                            ChatItem.Tool.State.FAILED -> "✗"
+                        },
+                        color = if (failed) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        item.name,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        if (expanded) "收起" else "参数",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             item.summary?.takeIf { it.isNotBlank() }?.let {
-                Spacer(Modifier.height(4.dp))
                 Text(
                     it,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = if (expanded) 40 else 2,
-                    color = if (item.state == ChatItem.Tool.State.FAILED) {
+                    color = if (failed) {
                         MaterialTheme.colorScheme.error
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -317,6 +388,7 @@ private fun ToolCard(item: ChatItem.Tool) {
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                 )
+            }
             }
         }
     }
@@ -384,6 +456,13 @@ private fun ConfirmBar(
     }
 }
 
+/**
+ * 输入栏。
+ *
+ * 圆角胶囊输入框 + 圆形发送键：这是聊天界面的通用形状语言，用户不用学。
+ * 运行中时发送键变「停止」—— 同一个位置、同一个动作位（我在让它停），
+ * 换到别处就会出现「停止在哪」的问题。
+ */
 @Composable
 private fun InputBar(
     input: String,
@@ -394,25 +473,48 @@ private fun InputBar(
 ) {
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(
-            Modifier.fillMaxWidth().padding(10.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInput,
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                shape = RoundedCornerShape(22.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("说点什么…") },
-                maxLines = 4,
-            )
+            ) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = onInput,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("说点什么…") },
+                    maxLines = 4,
+                    shape = RoundedCornerShape(22.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent,
+                    ),
+                )
+            }
             Spacer(Modifier.width(8.dp))
             if (running) {
-                OutlinedButton(onClick = onStop, modifier = Modifier.height(56.dp)) { Text("停止") }
+                FilledIconButton(
+                    onClick = onStop,
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                ) {
+                    Text("■", style = MaterialTheme.typography.labelLarge)
+                }
             } else {
-                Button(
+                FilledIconButton(
                     onClick = onSend,
                     enabled = input.isNotBlank(),
-                    modifier = Modifier.height(56.dp),
-                ) { Text("发送") }
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Text("➤", style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
     }

@@ -137,6 +137,17 @@ object RootFs {
         if (parts.size < 3) null else Triple(parts[0], parts[1], parts[2])
     }.getOrNull()
 
+    /**
+     * 改属主/属组（root 专属）。
+     *
+     * **只接受 `user`、`user:group`、`:group` 三种形态**（和 `chown(1)` 一致），
+     * 校验放在调用方：数值 uid/gid 在这里不收 —— 拼错一个数字把文件给了
+     * 不存在的 uid，比报一句「格式不对」难收拾得多。
+     */
+    fun chown(path: String, owner: String): Boolean = runCatching {
+        Shell.cmd("chown ${q(owner)} ${q(path)} 2>&1").exec().isSuccess
+    }.getOrDefault(false)
+
     /** 文件大小（字节）。不存在或读不到返回 null。 */
     fun sizeOf(path: String): Long? = runCatching {
         val r = Shell.cmd("stat -c '%s' ${q(path)} 2>/dev/null").exec()

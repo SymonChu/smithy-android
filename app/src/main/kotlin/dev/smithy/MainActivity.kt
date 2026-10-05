@@ -198,6 +198,7 @@ fun SmithyRoot(
                     onDeleteEntry = filesVm::deleteEntry,
                     onUndoEntry = filesVm::undoEntry,
                     onSaveZip = { pickTarget.launch("output.zip") },
+                    onExtractTar = filesVm::extractTarHere,
                     onOpenText = filesVm::openText,
                     onSaveText = filesVm::saveText,
                     onCancelEdit = filesVm::cancelEdit,
@@ -226,6 +227,7 @@ fun SmithyRoot(
                     onNewFolder = filesVm::mkdir,
                     onNewFile = filesVm::touch,
                     onChmod = filesVm::chmod,
+                    onChown = filesVm::chown,
                     onViewHex = { item -> filesVm.viewHex(item.path) },
                     onHexClose = filesVm::hexClose,
                     onHexGoto = filesVm::hexGoto,
@@ -236,6 +238,11 @@ fun SmithyRoot(
                     onCancelSearch = filesVm::cancelSearch,
                     onCloseSearch = filesVm::closeSearch,
                     onRevealHit = filesVm::revealHit,
+                    onOpenAppPicker = filesVm::openAppPicker,
+                    onCloseAppPicker = filesVm::closeAppPicker,
+                    onFilterApps = filesVm::filterApps,
+                    onToggleSystemApps = filesVm::toggleSystemApps,
+                    onExtractApp = filesVm::extractApp,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(

@@ -16,9 +16,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import dev.smithy.fs.FsItem
 import dev.smithy.fs.humanSize
 import dev.smithy.fs.humanTime
@@ -28,6 +30,8 @@ import dev.smithy.design.SmithyMono
 import dev.smithy.design.SmithySpacing
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -73,6 +77,7 @@ fun FilesScreen(
     onDeleteEntry: (String) -> Unit,
     onUndoEntry: (String) -> Unit,
     onSaveZip: () -> Unit,
+    onExtractTar: () -> Unit,
     onOpenText: (String) -> Unit,
     onSaveText: (String) -> Unit,
     onCancelEdit: () -> Unit,
@@ -101,6 +106,7 @@ fun FilesScreen(
     onNewFolder: (String) -> Unit,
     onNewFile: (String) -> Unit,
     onChmod: (String, String) -> Unit,
+    onChown: (String, String) -> Unit,
     onViewHex: (FsItem) -> Unit,
     onHexClose: () -> Unit,
     onHexGoto: (String) -> Unit,
@@ -111,6 +117,11 @@ fun FilesScreen(
     onCancelSearch: () -> Unit,
     onCloseSearch: () -> Unit,
     onRevealHit: (FsItem) -> Unit,
+    onOpenAppPicker: () -> Unit,
+    onCloseAppPicker: () -> Unit,
+    onFilterApps: (String) -> Unit,
+    onToggleSystemApps: () -> Unit,
+    onExtractApp: (dev.smithy.fs.AppExtractor.AppInfo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
@@ -128,6 +139,7 @@ fun FilesScreen(
     var recursive by remember { mutableStateOf(true) }
     // 正在改权限的那个路径（null = 没在改）
     var chmodTarget by remember { mutableStateOf<String?>(null) }
+    var chownTarget by remember { mutableStateOf<String?>(null) }
     // 编辑中就让编辑器占满整屏：这时用户的心智在「改这个文件」上，
     // 把列表留在旁边只会把行宽挤到看不清
     state.editingPath?.let { path ->
@@ -156,7 +168,12 @@ fun FilesScreen(
     }
 
     state.properties?.let { props ->
-        PropertiesCard(props, onDismissProperties, onChmod = { chmodTarget = props.path })
+        PropertiesCard(
+            props,
+            onDismissProperties,
+            onChmod = { chmodTarget = props.path },
+            onChown = { chownTarget = props.path },
+        )
     }
 
     // 改权限。预填当前值 —— 常见操作是在它基础上改一位（比如 644 → 755），
@@ -170,6 +187,19 @@ fun FilesScreen(
                 onChmod(path, mode)
             },
             onDismiss = { chmodTarget = null },
+        )
+    }
+
+    // 改属主。预填「当前属主:当前属组」—— 三个合法形态里最常用的是在此基础上改
+    chownTarget?.let { path ->
+        TextInputDialog(
+            title = "改属主（root / root:shell / :shell）",
+            initial = listOfNotNull(state.properties?.owner, state.properties?.group).joinToString(":"),
+            onConfirm = { owner ->
+                chownTarget = null
+                onChown(path, owner)
+            },
+            onDismiss = { chownTarget = null },
         )
     }
 
@@ -189,6 +219,19 @@ fun FilesScreen(
 
     Column(modifier.fillMaxSize()) {
         val zip = state.zip
+
+        // 「从设备提取应用」：整屏替换（那些条目不属于文件系统，多选/粘贴
+        // 不该作用在它们身上 —— 和搜索结果同一策略）
+        state.appPicker?.let { picker ->
+            AppPickerScreen(
+                picker,
+                onClose = onCloseAppPicker,
+                onQuery = onFilterApps,
+                onToggleSystem = onToggleSystemApps,
+                onExtract = onExtractApp,
+            )
+            return@Column
+        }
         // 宽屏（平板 / 横屏）才分栏。手机竖屏并排两栏会把每边压到十几列字符宽，
         // 连路径都显示不全 —— 那比单栏更难用，所以阈值卡在 600dp
         val wide = LocalConfiguration.current.screenWidthDp >= WIDE_DP
@@ -212,6 +255,7 @@ fun FilesScreen(
                             MoreMenu(
                                 searching = searching,
                                 onImport = onImport,
+                                onExtractApp = onOpenAppPicker,
                                 onToggleSearch = {
                                     // 关掉搜索时**把结果也清掉**：只藏起搜索条、留着那屏
                                     // 结果的活，用户会以为自己正站在某个目录里
@@ -302,7 +346,7 @@ fun FilesScreen(
                             onUndoEntry,
                             onOpenText,
                         )
-                        ZipActions(zip, onCloseZip, onSaveZip)
+                        ZipActions(zip, onCloseZip, onSaveZip, onExtractTar)
                     }
                 }
             }
@@ -320,6 +364,7 @@ fun FilesScreen(
                             MoreMenu(
                                 searching = searching,
                                 onImport = onImport,
+                                onExtractApp = onOpenAppPicker,
                                 onToggleSearch = {
                                     // 关掉搜索时**把结果也清掉**：只藏起搜索条、留着那屏
                                     // 结果的活，用户会以为自己正站在某个目录里
@@ -389,7 +434,7 @@ fun FilesScreen(
         } else {
             ZipHeader(zip, state.busy)
             ZipList(zip, Modifier.weight(1f), onReplaceEntry, onDeleteEntry, onUndoEntry, onOpenText)
-            ZipActions(zip, onCloseZip, onSaveZip)
+            ZipActions(zip, onCloseZip, onSaveZip, onExtractTar)
         }
 
         state.message?.let { MessageBar(it, state.isError) }
@@ -423,39 +468,70 @@ private fun DirHeader(
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-            TextButton(onClick = onGoUp) { Text("↑") }
-            // 面包屑：每一级都能点。比「返回上一级」按很多次快得多，也是文件管理器该有的手感。
-            // 长路径横向滚动 —— 宁可滚，也不要把中间截掉（截掉的往往正是要确认的那一级）
-            Row(
-                Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                crumbs.forEachIndexed { i, (full, name) ->
-                    if (i > 0) {
-                        Text("/", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    TextButton(
-                        onClick = { onJump(full) },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                    ) {
-                        Text(
-                            name,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            // 当前这一级加粗：长路径滚起来时，得能一眼认出自己在哪
-                            fontWeight = if (i == crumbs.lastIndex) FontWeight.Bold else FontWeight.Normal,
-                        )
+                // ↑ 收成方图标按钮：它和面包屑是同一件事（换位置），但占的宽度
+                // 从「一个字 + TextButton 默认内边距」缩到一个 32dp 方块
+                FilledTonalIconButton(onClick = onGoUp, modifier = Modifier.size(32.dp)) {
+                    Text("↑", style = MaterialTheme.typography.bodyMedium)
+                }
+                // 面包屑：**胶囊链**而不是文字按钮排。每一级都是一个可点的胶囊，
+                // 当前这一级填色加粗 —— 长路径滚起来时得能一眼认出自己在哪。
+                // 可点区域比旧版（TextButton 的内边距）大，误触更少
+                Row(
+                    Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    crumbs.forEachIndexed { i, (full, name) ->
+                        Surface(
+                            onClick = { onJump(full) },
+                            color = if (i == crumbs.lastIndex) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainer
+                            },
+                            shape = MaterialTheme.shapes.extraSmall,
+                        ) {
+                            Text(
+                                name,
+                                Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = if (i == crumbs.lastIndex) FontWeight.Bold else FontWeight.Normal,
+                                color = if (i == crumbs.lastIndex) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
                     }
                 }
-            }
-            // root 开关放在路径右边：当前在哪种模式必须**一眼看到** ——
-            // 两种模式下同一个路径名含义不同（`/data` 在普通模式指应用自己的，
-            // 在 root 模式指系统那个），看不出来就会改错东西
-            TextButton(onClick = onToggleRoot) {
-                Text(if (rootMode) "root ●" else "普通")
-            }
-            trailing()
+                // root 开关：保持**一眼看到**（同一个路径名在两种模式下含义不同），
+                // 但从文字按钮收成 32dp 徽章 —— 常亮状态不需要一整块可点区域
+                Surface(
+                    onClick = onToggleRoot,
+                    color = if (rootMode) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainer
+                    },
+                    shape = MaterialTheme.shapes.extraSmall,
+                ) {
+                    Text(
+                        if (rootMode) "root ●" else "普通",
+                        Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (rootMode) FontWeight.Bold else FontWeight.Normal,
+                        color = if (rootMode) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                trailing()
             }
             // 粘贴板有东西时，在路径下方单占一行：它是「下一步动作」，位置要显眼 ——
             // 用户刚点了复制/剪切，下一步就是找地方贴，这时不该让他去找按钮
@@ -559,8 +635,11 @@ private fun StorageAccessBar(state: StorageAccess.State, onRequest: () -> Unit) 
 /**
  * 快捷入口。
  *
- * 文件管理器最常用的几个位置各给一个按钮 —— 每次从 `/` 一层层点下去，
+ * 文件管理器最常用的几个位置各给一个胶囊 —— 每次从 `/` 一层层点下去，
  * 在最常去的那三四个地方是纯粹的浪费时间。
+ *
+ * 胶囊（小圆角药丸）而不是 OutlinedButton：这行和面包屑贴在一起，
+ * 描边按钮的边框会把视线割碎；实心药丸在明暗两套下都更轻。
  */
 @Composable
 private fun ShortcutBar(items: List<Pair<String, String>>, onJump: (String) -> Unit) {
@@ -569,11 +648,17 @@ private fun ShortcutBar(items: List<Pair<String, String>>, onJump: (String) -> U
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         items.forEach { (label, path) ->
-            OutlinedButton(
+            Surface(
                 onClick = { onJump(path) },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                shape = RoundedCornerShape(99.dp),
             ) {
-                Text(label, style = MaterialTheme.typography.labelSmall)
+                Text(
+                    label,
+                    Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -720,7 +805,12 @@ private fun SearchHits(hits: List<FsItem>, onReveal: (FsItem) -> Unit) {
  * 这两件事偶尔才用一次，而那一行是**每次浏览都在付**的成本。
  */
 @Composable
-private fun MoreMenu(searching: Boolean, onImport: () -> Unit, onToggleSearch: () -> Unit) {
+private fun MoreMenu(
+    searching: Boolean,
+    onImport: () -> Unit,
+    onToggleSearch: () -> Unit,
+    onExtractApp: () -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     Box {
         TextButton(
@@ -737,6 +827,10 @@ private fun MoreMenu(searching: Boolean, onImport: () -> Unit, onToggleSearch: (
             DropdownMenuItem(
                 text = { Text(if (searching) "关闭搜索" else "搜索") },
                 onClick = { open = false; onToggleSearch() },
+            )
+            DropdownMenuItem(
+                text = { Text("从设备提取应用") },
+                onClick = { open = false; onExtractApp() },
             )
         }
     }
@@ -1014,7 +1108,12 @@ private fun RuleRow(label: String, value: String, onChange: (String) -> Unit) {
  * 而 SHA-256 有 64 个字符，挤在对话框的窄宽度里会折行，抄起来更容易错。
  */
 @Composable
-private fun PropertiesCard(props: Properties, onDismiss: () -> Unit, onChmod: () -> Unit) {
+private fun PropertiesCard(
+    props: Properties,
+    onDismiss: () -> Unit,
+    onChmod: () -> Unit,
+    onChown: () -> Unit,
+) {
     Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
         Column(
             Modifier.fillMaxWidth().padding(12.dp),
@@ -1032,8 +1131,16 @@ private fun PropertiesCard(props: Properties, onDismiss: () -> Unit, onChmod: ()
             // 会让人以为那就是当前权限
             if (props.mode != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    PropLine("权限", "${props.mode}  ${props.owner ?: ""} ${props.group ?: ""}", Modifier.weight(1f))
+                    PropLine("权限", props.mode, Modifier.weight(1f))
                     TextButton(onClick = onChmod) { Text("改") }
+                }
+            }
+            // 属主同理：读不到不显示。改属主是独立入口 —— 和权限分开，
+            // 因为常见操作是其一不是其二，合在一起要多敲一段
+            if (props.owner != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PropLine("属主", "${props.owner}:${props.group ?: ""}", Modifier.weight(1f))
+                    TextButton(onClick = onChown) { Text("改") }
                 }
             }
             props.note?.let { PropLine("摘要", it) }
@@ -1202,23 +1309,47 @@ private fun ZipRow(
 }
 
 @Composable
-private fun ZipActions(zip: ZipUiState, onClose: () -> Unit, onSave: () -> Unit) {
+private fun ZipActions(
+    zip: ZipUiState,
+    onClose: () -> Unit,
+    onSave: () -> Unit,
+    onExtract: () -> Unit = {},
+) {
     Surface(tonalElevation = 2.dp) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
-            Text(
-                "改动先攒着，点保存才写盘。**改过的 apk 签名会失效**，要重签才能装",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (zip.isTar) {
+                // tar 没有改动攒不攒的问题 —— 它是只读的，主操作就是解压
+                Text(
+                    "tar / tar.gz 只读浏览。解压会在旁边建同名文件夹，已存在的文件跳过",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    "改动先攒着，点保存才写盘。**改过的 apk 签名会失效**，要重签才能装",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onClose, modifier = Modifier.weight(1f)) { Text("关闭") }
-                Button(
-                    onClick = onSave,
-                    enabled = zip.changes.isNotEmpty() && !zip.saving,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(if (zip.saving) "保存中…" else "另存为…")
+                if (zip.isTar) {
+                    Button(
+                        onClick = onExtract,
+                        enabled = !zip.saving,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(if (zip.saving) "解压中…" else "解压到旁边文件夹")
+                    }
+                } else {
+                    Button(
+                        onClick = onSave,
+                        enabled = zip.changes.isNotEmpty() && !zip.saving,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(if (zip.saving) "保存中…" else "另存为…")
+                    }
                 }
             }
         }
@@ -1239,5 +1370,85 @@ private fun MessageBar(text: String, isError: Boolean) {
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.fillMaxWidth().padding(10.dp),
         )
+    }
+}
+
+/**
+ * 「从设备提取应用」整屏。
+ *
+ * 和目录列表是**两种东西**：这里的行没有 FsItem 的路径语义（点开没有
+ * 「它所在的目录」），所以不复用 DirList —— 复用会诱导多选/粘贴作用上去。
+ */
+@Composable
+private fun AppPickerScreen(
+    picker: AppPickerState,
+    onClose: () -> Unit,
+    onQuery: (String) -> Unit,
+    onToggleSystem: () -> Unit,
+    onExtract: (dev.smithy.fs.AppExtractor.AppInfo) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        // 顶栏：返回 + 标题。这里不该出现面包屑 —— 我们不在文件系统里
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("从设备提取应用", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = onToggleSystem) {
+                Text(if (picker.includeSystem) "隐藏系统应用" else "含系统应用")
+            }
+            TextButton(onClick = onClose) { Text("关闭") }
+        }
+        // 过滤框：装了两百个应用的设备上，没有它就得滚很久
+        OutlinedTextField(
+            value = picker.query,
+            onValueChange = onQuery,
+            singleLine = true,
+            placeholder = { Text("按名字 / 包名过滤") },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+        if (picker.loading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return@Column
+        }
+        val q = picker.query.trim().lowercase()
+        val shown = if (q.isEmpty()) picker.apps else picker.apps.filter {
+            it.label.lowercase().contains(q) || it.packageName.lowercase().contains(q)
+        }
+        if (shown.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("没有匹配的应用", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            return@Column
+        }
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(shown, key = { it.packageName }) { app ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onExtract(app) }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(app.label, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            buildString {
+                                append(app.packageName)
+                                append("  ·  ")
+                                append(app.versionName)
+                                if (app.splits.isNotEmpty()) append("  ·  split ×${app.splits.size}")
+                                if (app.isUpdatedSystem) append("  ·  系统应用的更新")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text("提取", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+                HorizontalDivider()
+            }
+        }
     }
 }
