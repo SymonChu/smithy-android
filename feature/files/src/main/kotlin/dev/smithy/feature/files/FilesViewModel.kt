@@ -108,6 +108,22 @@ data class AppPickerState(
     val includeSystem: Boolean = false,
 )
 
+/**
+ * 文件管理器的一个标签。每个标签只隔离**浏览位置**：A 标签在 `/data`、
+ * B 标签在 `/storage/sdcard0/Download`，切回来还在原地。
+ *
+ * zip / hex / 属性这些模态状态**不**按标签隔离：它们是「正在进行的操作」，
+ * 切标签时关掉（关 zip 顺带丢掉未保存的改动会有提示，见 closeTab）。
+ */
+data class FileTab(
+    val id: Long,
+    val dir: String,
+) {
+    /** 标签上显示的名字：目录最后一段，根目录给「/」。 */
+    val label: String
+        get() = dir.trimEnd('/').substringAfterLast('/').ifBlank { "/" }
+}
+
 data class FilesUiState(
     val dir: String = "",
     val items: List<FsItem> = emptyList(),
@@ -117,6 +133,14 @@ data class FilesUiState(
     val busy: String? = null,
     val message: String? = null,
     val isError: Boolean = false,
+
+    /**
+     * 打开的标签。第一个标签永远存在；切换只换「浏览位置」，
+     * zip/hex/属性等模态状态是全局的（切标签即收起）。
+     */
+    val tabs: List<FileTab> = listOf(FileTab(id = 0, dir = "")),
+    /** 当前激活的标签 id。 */
+    val activeTabId: Long = 0L,
 
     /** 正在编辑的文本条目（null = 没在编辑）。 */
     val editingPath: String? = null,
@@ -232,10 +256,11 @@ private const val HEX_WINDOW = 4096
 
 /**
  * 用户的共享存储。用 `/sdcard` 这个路径而不是 `Environment.getExternalStorageDirectory()`：
- * 后者在部分设备上返回 `/storage/emulated/0`，而用户（和 shell）认的是 `/sdcard`，
- * 界面上显示哪个、我们内部用哪个要一致，否则路径看起来会前后不一样。
+ * 后者在部分设备上返回 `/storage/emulated/0`。统一用 `/storage/sdcard0`
+ * （真实挂载点）：用户指定认这个路径，且它是实体目录而不是软链，
+ * root shell 在它上面的行为最可预期。
  */
-private const val SDCARD = "/sdcard"
+private const val SDCARD = "/storage/sdcard0"
 
 /**
  * 文件管理 + zip 直改。
@@ -446,7 +471,11 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
                     }.let { list ->
                         // 先过滤隐藏项，再排序 —— 排序前过滤能少排一批，
                         // 而且顺序反了会把「隐藏文件」也算进「全选」的语义里
-                        if (_state.value.showHidden) list else list.filter { !it.name.startsWith(".") }
+                        val visible = if (_state.value.showHidden) list else list.filter { !it.name.startsWith(".") }
+                        // **按路径去重**：挂载命名空间里同一目录可能出现两个同名条目
+                        //（/storage 双挂载视图最常见），而列表用 path 当 key ——
+                        // 重复 key 会让 LazyColumn 在滑动时直接崩（IllegalArgumentException）
+                        visible.distinctBy { it.path }
                     }.sortedWith(
                         // 目录恒在前（文件管理器的通例：先看到能进去的东西），
                         // 同一类内部才按所选方式排
@@ -461,7 +490,15 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
                         },
                     )
                 }
-                _state.update { it.copy(dir = path, items = items, busy = null) }
+                _state.update { s ->
+                    s.copy(
+                        dir = path,
+                        items = items,
+                        busy = null,
+                        // 浏览位置记到当前标签上 —— 切走再切回来还在这个目录
+                        tabs = s.tabs.map { if (it.id == s.activeTabId) it.copy(dir = path) else it },
+                    )
+                }
             } catch (t: Throwable) {
                 fail(t)
             }
@@ -886,6 +923,77 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (t: Throwable) {
                 _state.update { it.copy(busy = null, message = "提取失败：${t.message}", isError = true) }
             }
+        }
+    }
+
+    // ── 标签 ────────────────────────────────────────────────────
+
+    /** 标签 id 发生器（递增，不回收 —— id 唯一性比数字好看重要）。 */
+    private var nextTabId = 1L
+
+    /**
+     * 新开一个标签，落在 [startDir]（默认内部存储）。
+     *
+     * 标签数上限 6：再多了标签条要横向滚很久，那不是多标签是收藏夹。
+     */
+    fun newTab(startDir: String = SDCARD) {
+        val s = _state.value
+        if (s.tabs.size >= 6) {
+            _state.update { it.copy(message = "最多 6 个标签", isError = false) }
+            return
+        }
+        val id = nextTabId++
+        // 切标签是「换位置」：正在进行的模态操作（zip 改动、hex、属性）随旧标签收起
+        closeZip()
+        _state.update {
+            it.copy(
+                tabs = it.tabs + FileTab(id = id, dir = startDir),
+                activeTabId = id,
+                properties = null,
+                search = null,
+            )
+        }
+        openDir(startDir)
+    }
+
+    /** 切到某个标签。该标签记住自己上次在哪个目录，回去时恢复。 */
+    fun selectTab(id: Long) {
+        val s = _state.value
+        val target = s.tabs.find { it.id == id } ?: return
+        if (id == s.activeTabId) return
+        closeZip()
+        _state.update {
+            it.copy(activeTabId = id, properties = null, search = null)
+        }
+        if (target.dir.isNotBlank()) {
+            openDir(target.dir)
+        } else {
+            openDir(SDCARD)
+        }
+    }
+
+    /**
+     * 关标签。至少留一个；关的是激活标签就切到相邻那个。
+     * zip 里有未保存改动时**先拦截**：丢改动得让用户点头，不能替他决定。
+     */
+    fun closeTab(id: Long) {
+        val s = _state.value
+        if (s.tabs.size <= 1) return
+        if (s.zip != null && s.zip.changes.isNotEmpty()) {
+            _state.update {
+                it.copy(message = "压缩包里还有没保存的改动，先保存或关闭压缩包再关标签", isError = true)
+            }
+            return
+        }
+        val remaining = s.tabs.filterNot { it.id == id }
+        _state.update { it.copy(tabs = remaining) }
+        if (id == s.activeTabId) {
+            // 切到被关标签的左邻（列表顺序里它前面那个），没有就新的第一个
+            val idx = s.tabs.indexOfFirst { it.id == id }
+            val neighbor = remaining.getOrNull(idx - 1) ?: remaining.first()
+            closeZip()
+            _state.update { it.copy(activeTabId = neighbor.id, properties = null, search = null) }
+            openDir(neighbor.dir.ifBlank { SDCARD })
         }
     }
 
@@ -1495,7 +1603,7 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val src = File(current.path)
                 val baseName = src.name.substringBefore(".tar").ifBlank { "tar-out" }
-                val targetDir = File(src.parentFile ?: File("/sdcard"), baseName)
+                val targetDir = File(src.parentFile ?: File("/storage/sdcard0"), baseName)
                 val files = withContext(Dispatchers.IO) {
                     targetDir.mkdirs()
                     TarReader.extractAll(src, targetDir)
@@ -1599,10 +1707,16 @@ class FilesViewModel(app: Application) : AndroidViewModel(app) {
         return listOf("/" to "根") + crumbs
     }
 
-    /** 常用的几个位置，做成快捷入口。 */
+    /**
+     * 常用的几个位置，做成快捷入口。
+     *
+     * 「内部存储」给 `/storage/sdcard0`（真实挂载点）而不是 `/sdcard`：
+     * 后者是指向它的符号链接，某些 ROM 的 root shell 在 `/sdcard` 上的行为
+     * （权限、软链解析）和真实路径不一致 —— 按用户指定的真实路径走，少一层间接。
+     */
     fun shortcuts(): List<Pair<String, String>> = listOf(
-        "内部存储" to "/sdcard",
-        "下载" to "/sdcard/Download",
+        "内部存储" to "/storage/sdcard0",
+        "下载" to "/storage/sdcard0/Download",
         "根目录" to "/",
         "模块目录" to "/data/adb/modules",
         "应用数据" to "/data/data",

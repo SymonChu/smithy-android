@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -122,6 +124,9 @@ fun FilesScreen(
     onFilterApps: (String) -> Unit,
     onToggleSystemApps: () -> Unit,
     onExtractApp: (dev.smithy.fs.AppExtractor.AppInfo) -> Unit,
+    onNewTab: () -> Unit,
+    onSelectTab: (Long) -> Unit,
+    onCloseTab: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 新建时问名字。用一个本地状态而不是 VM 状态：它只活在这一个对话框里，
@@ -167,10 +172,13 @@ fun FilesScreen(
         return
     }
 
+    // 属性面板用**对话框**承载：它是「看一眼就走」的临时信息，
+    // 之前的实现把它裸浮在列表上层 —— 卡片和底下的列表文字叠在一起，
+    // 看起来就是「背景透明、什么都看不清」
     state.properties?.let { props ->
-        PropertiesCard(
+        PropertiesDialog(
             props,
-            onDismissProperties,
+            onDismiss = onDismissProperties,
             onChmod = { chmodTarget = props.path },
             onChown = { chownTarget = props.path },
         )
@@ -219,6 +227,16 @@ fun FilesScreen(
 
     Column(modifier.fillMaxSize()) {
         val zip = state.zip
+
+        // 标签条：最顶上。它在路径栏之上 —— 标签是「我在哪个会话」，
+        // 路径栏是「这个会话里我在哪」，层级从外到内
+        TabStrip(
+            tabs = state.tabs,
+            activeTabId = state.activeTabId,
+            onSelect = onSelectTab,
+            onClose = onCloseTab,
+            onNew = onNewTab,
+        )
 
         // 「从设备提取应用」：整屏替换（那些条目不属于文件系统，多选/粘贴
         // 不该作用在它们身上 —— 和搜索结果同一策略）
@@ -1102,55 +1120,60 @@ private fun RuleRow(label: String, value: String, onChange: (String) -> Unit) {
 }
 
 /**
- * 属性 / 摘要卡片。
+ * 属性 / 摘要对话框。
  *
- * 不用对话框装它：摘要要能**逐行选中复制**（对比包的 MD5 正是主要用途），
- * 而 SHA-256 有 64 个字符，挤在对话框的窄宽度里会折行，抄起来更容易错。
+ * 曾经是裸浮在列表上层的 Surface —— 卡片和底下的列表文字叠着画，
+ * 看起来「背景是透明的、什么都看不清」。改成 AlertDialog：
+ * 有自己的不透明 scrim 和窗口背景，内容再长也在对话框里滚动。
+ * 摘要仍逐行可选可复制（SelectionContainer 保留）。
  */
 @Composable
-private fun PropertiesCard(
+private fun PropertiesDialog(
     props: Properties,
     onDismiss: () -> Unit,
     onChmod: () -> Unit,
     onChown: () -> Unit,
 ) {
-    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
-        Column(
-            Modifier.fillMaxWidth().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("属性", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                TextButton(onClick = onDismiss) { Text("关闭") }
-            }
-            PropLine("名字", props.name)
-            PropLine("路径", props.path)
-            PropLine("大小", humanSize(props.size))
-            PropLine("修改时间", humanTime(props.modified))
-            // 权限只有 root 下读得到，读不到就整行不显示 —— 编一个「644」出来
-            // 会让人以为那就是当前权限
-            if (props.mode != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    PropLine("权限", props.mode, Modifier.weight(1f))
-                    TextButton(onClick = onChmod) { Text("改") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("属性") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                PropLine("名字", props.name)
+                PropLine("路径", props.path)
+                PropLine("大小", humanSize(props.size))
+                PropLine("修改时间", humanTime(props.modified))
+                // 权限只有 root 下读得到，读不到就整行不显示 —— 编一个「644」出来
+                // 会让人以为那就是当前权限
+                if (props.mode != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        PropLine("权限", props.mode, Modifier.weight(1f))
+                        TextButton(onClick = onChmod) { Text("改") }
+                    }
+                }
+                // 属主同理：读不到不显示。改属主是独立入口 —— 和权限分开，
+                // 因为常见操作是其一不是其二，合在一起要多敲一段
+                if (props.owner != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        PropLine("属主", "${props.owner}:${props.group ?: ""}", Modifier.weight(1f))
+                        TextButton(onClick = onChown) { Text("改") }
+                    }
+                }
+                props.note?.let { PropLine("摘要", it) }
+                props.digests?.let { d ->
+                    PropLine("MD5", d.md5)
+                    PropLine("SHA-1", d.sha1)
+                    PropLine("SHA-256", d.sha256)
                 }
             }
-            // 属主同理：读不到不显示。改属主是独立入口 —— 和权限分开，
-            // 因为常见操作是其一不是其二，合在一起要多敲一段
-            if (props.owner != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    PropLine("属主", "${props.owner}:${props.group ?: ""}", Modifier.weight(1f))
-                    TextButton(onClick = onChown) { Text("改") }
-                }
-            }
-            props.note?.let { PropLine("摘要", it) }
-            props.digests?.let { d ->
-                PropLine("MD5", d.md5)
-                PropLine("SHA-1", d.sha1)
-                PropLine("SHA-256", d.sha256)
-            }
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        },
+    )
 }
 
 @Composable
@@ -1449,6 +1472,83 @@ private fun AppPickerScreen(
                 }
                 HorizontalDivider()
             }
+        }
+    }
+}
+
+/**
+ * 文件管理器的标签条。
+ *
+ * 和浏览器标签同一个心智模型：每个标签记住自己浏览到哪，× 关闭、＋ 新开。
+ * 当前标签填色、其余描边——和面包屑胶囊是同一套形状语言。
+ * 只有一个标签时不显示 ×（关了它就什么都不剩了），但 ＋ 始终在。
+ */
+@Composable
+private fun TabStrip(
+    tabs: List<FileTab>,
+    activeTabId: Long,
+    onSelect: (Long) -> Unit,
+    onClose: (Long) -> Unit,
+    onNew: () -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            tabs.forEach { tab ->
+                val active = tab.id == activeTabId
+                Surface(
+                    color = if (active) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
+                ) {
+                    Row(
+                        Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            tab.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            modifier = Modifier.widthIn(max = 96.dp),
+                            color = if (active) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        if (tabs.size > 1) {
+                            Text(
+                                "×",
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier
+                                    .clickable { onClose(tab.id) }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                color = if (active) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            // ＋ 新建标签
+            Text(
+                "＋",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier
+                    .clickable(onClick = onNew)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

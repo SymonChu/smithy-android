@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -32,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import dev.smithy.design.SmithyTheme
 import dev.smithy.feature.apk.ApkWorkbenchScreen
 import dev.smithy.feature.chat.ChatScreen
@@ -180,7 +182,10 @@ fun SmithyRoot(
     Scaffold(
         modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars),
         bottomBar = {
-            NavigationBar {
+            // 底栏压到 56dp（M3 默认 80dp）：图标为空、只有文字标签，
+            // 80dp 的一半高度都是空白 —— 4 个 tab 是导航不是展示，窄一点
+            // 每页多出两行内容的可视空间
+            NavigationBar(modifier = Modifier.height(56.dp)) {
                 Tab.entries.forEach { t ->
                     NavigationBarItem(
                         selected = tab == t,
@@ -253,6 +258,9 @@ fun SmithyRoot(
                     onFilterApps = filesVm::filterApps,
                     onToggleSystemApps = filesVm::toggleSystemApps,
                     onExtractApp = filesVm::extractApp,
+                    onNewTab = { filesVm.newTab() },
+                    onSelectTab = filesVm::selectTab,
+                    onCloseTab = filesVm::closeTab,
                 )
 
                 Tab.Apk -> ApkWorkbenchScreen(
