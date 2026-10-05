@@ -5,12 +5,16 @@ import android.Manifest
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.NavigationBar
@@ -61,6 +65,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Edge-to-edge：targetSdk 35 起 Android 强制内容延伸到状态栏后面，
+        // 各页顶栏会画进状态栏底下 —— 表现为「看不见状态栏」。
+        // 显式开启 + 在 SmithyRoot 的 Scaffold 上垫状态栏高度，
+        // 状态栏区域交还系统画，内容从它下面开始
+        enableEdgeToEdge()
         incoming.value = incomingUriOf(intent)
         setContent {
             // 主题套在最外层：整棵界面树都从它取色板/字阶/圆角。
@@ -169,6 +178,7 @@ fun SmithyRoot(
     ) { uri -> if (uri != null) filesVm.importFromUri(uri) }
 
     Scaffold(
+        modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars),
         bottomBar = {
             NavigationBar {
                 Tab.entries.forEach { t ->
