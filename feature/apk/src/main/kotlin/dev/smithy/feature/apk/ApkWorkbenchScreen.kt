@@ -154,6 +154,8 @@ fun ApkWorkbenchScreen(
                     onCancelEdit = moduleVm::cancelEdit,
                     onSaveEntry = moduleVm::saveEntry,
                     onInstall = moduleVm::install,
+                    // native 编译：zygisk 那一档只有编出 zygisk/<abi>.so 才会生效
+                    onCompile = { moduleVm.compile() },
                     onSetEnabled = moduleVm::setEnabled,
                     onScheduleRemove = moduleVm::scheduleRemove,
                     onUninstall = moduleVm::uninstallNow,

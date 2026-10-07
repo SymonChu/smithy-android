@@ -9,6 +9,9 @@ import dev.smithy.fs.ModuleProp
 import dev.smithy.fs.ModuleProject
 import dev.smithy.fs.ModuleScaffold
 import dev.smithy.fs.ModuleSkeletonSpec
+import dev.smithy.fs.ModuleNativeBuild
+import dev.smithy.fs.NativeAbi
+import dev.smithy.fs.NativeToolchains
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -79,7 +82,15 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 打开一个模块 zip。 */
-    fun open(zipPath: String) {
+    fun open(zipPath: String) = load(zipPath, packaged = null)
+
+    /**
+     * 读一个模块 zip 进状态。
+     *
+     * [packaged] 是「当前该刷哪个包」：从源码编出带 so 的新包之后，那张包才是要刷的产物，
+     * 而 [zipPath] 也跟着指过去（结构卡要显示出新增的 `zygisk/<abi>.so`）。
+     */
+    private fun load(zipPath: String, packaged: String?, done: String? = null) {
         viewModelScope.launch {
             _state.update { it.copy(busy = "读模块…", message = null, isError = false) }
             try {
@@ -104,8 +115,9 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
                         draftVersionCode = prop.versionCode.toString(),
                         draftName = prop.name,
                         draftDescription = prop.description,
-                        packaged = null,
+                        packaged = packaged,
                         busy = null,
+                        message = done,
                     )
                 }
             } catch (t: Throwable) {
@@ -221,6 +233,50 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── 脚本 / 文本条目 ─────────────────────────────────────────
+
+    // ── native 编译 ─────────────────────────────────────────────
+
+    /**
+     * 把 `jni/` 下的源码编成 `zygisk/<abi>.so`，产出写成 `<原名>-<abi>.zip` 并打开它。
+     *
+     * 这是 zygisk 那一档从「有源码」到「能生效」的必经一步：Magisk 只认
+     * `zygisk/<abi>.so`，源码刷进去什么都不会发生。编译本身在
+     * [ModuleNativeBuild]（纯 JVM，和 AI 用的是同一条路径）。
+     *
+     * 没有工具链时**立刻说清**，不启动一次注定失败的编译：clang + sysroot 是
+     * 300–400MB 的下载项，用户得先把它放进来（见 docs/06 的 M6-B）。
+     */
+    fun compile(abi: NativeAbi = NativeAbi.ARM64_V8A) {
+        val zip = _state.value.zipPath?.let(::File) ?: return
+        val toolchain = NativeToolchains.current()
+        if (toolchain == null || !toolchain.available()) {
+            // 措辞取自 core:fs —— 模块页和 AI 看到的必须是同一句话
+            return message(NativeToolchains.missingHint(), isError = true)
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "编译 ${abi.abiName}…", message = null, isError = false) }
+            val out = File(zip.parentFile, "${zip.nameWithoutExtension}-${abi.abiName}.zip")
+            val result = withContext(Dispatchers.IO) {
+                ModuleNativeBuild.build(zip, abi, out, toolchain)
+            }
+            if (!result.ok) {
+                // 编译器的原话 + 下一步：只说「编译失败」等于把用户扔在原地
+                val log = result.log.lines().takeLast(6).joinToString("\n")
+                return@launch _state.update {
+                    it.copy(
+                        busy = null,
+                        isError = true,
+                        message = (result.hint ?: "编译失败") + if (log.isBlank()) "" else "\n$log",
+                    )
+                }
+            }
+            // 编出来的那张包才是「当前要刷的」：产物另存，原 zip 一个字节没动
+            val built = result.outZip
+                ?: return@launch message("编译器说成功了，但没有产物文件 —— 这不该发生，把工具链路径记下来报给我们", isError = true)
+            load(built.absolutePath, packaged = built.absolutePath, done = "已编出 ${result.soEntry}")
+        }
+    }
 
     fun startEdit(path: String) {
         val s = _state.value

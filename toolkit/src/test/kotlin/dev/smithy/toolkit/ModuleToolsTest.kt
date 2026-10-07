@@ -1,6 +1,5 @@
 package dev.smithy.toolkit
 
-import dev.smithy.engine.ApkProject
 import dev.smithy.fs.ModuleProject
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -18,19 +17,6 @@ import kotlin.test.assertTrue
  * 而 `zygote.restart` 会把所有正在跑的应用重启、用户没保存的东西全丢。
  */
 class ModuleToolsTest {
-
-    private class FakeContext(private val answer: Boolean = true) : ToolContext {
-        override val workspace: ApkProject? = null
-        override fun requireWorkspace(): ApkProject = throw NoWorkspaceException()
-        override val sessionId: String = "test"
-        override val callId: String = "test"
-        override fun progress(message: String) = Unit
-        val confirms = mutableListOf<ConfirmRequest>()
-        override suspend fun confirm(request: ConfirmRequest): Boolean {
-            confirms += request
-            return answer
-        }
-    }
 
     private fun args(vararg pairs: Pair<String, String>): JsonObject = buildJsonObject {
         pairs.forEach { (k, v) -> put(k, JsonPrimitive(v)) }

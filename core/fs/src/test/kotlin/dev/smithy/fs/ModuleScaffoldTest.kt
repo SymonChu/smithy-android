@@ -113,4 +113,27 @@ class ModuleScaffoldTest {
         val prop = assertNotNull(ModuleProp.parse(entries.getValue(ModuleProject.ModulePropFile)))
         assertEquals("example", prop.name)
     }
+
+    @Test
+    fun `zygisk 骨架里带官方 zygisk_hpp 且内容一字未改`() {
+        val header = assertNotNull(ModuleScaffold.zygiskHeader(), "资源里该带着 zygisk.hpp")
+        // 0BSD：分发要保留版权声明；文件自己还写着「不许改内容」—— 两条都用哈希钉住
+        assertTrue(header.contains("Copyright 2022-2023 John \"topjohnwu\" Wu"), "版权声明不能丢")
+        assertTrue(header.contains("DO NOT MODIFY ANY CODE IN THIS HEADER"))
+        assertEquals(
+            ZYGISK_HPP_SHA256,
+            Hashing.ofBytes(header.toByteArray()).sha256,
+            "官方头文件被改过了 —— 这一份是原样分发的，要更新就换成官方原件",
+        )
+
+        val entries = ModuleScaffold.entries(spec(flavour = ModuleSkeletonSpec.Flavour.ZYGISK))
+        assertEquals(header, entries["jni/zygisk.hpp"], "骨架里那一份要和资源里的一致")
+        // 有了它，用户/模型不需要再去找头文件 —— 编译能直接跑
+        assertTrue("jni/module.cpp" in entries)
+    }
+
+    private companion object {
+        /** 官方 `zygisk.hpp`（topjohnwu/zygisk-module-sample）的 SHA-256。 */
+        const val ZYGISK_HPP_SHA256 = "f8d55e8b4f89d418c5941afe62ce6a09ddec1f4afd9a1b0a01eb40a93310dd28"
+    }
 }

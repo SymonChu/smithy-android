@@ -74,6 +74,20 @@ object ModuleScaffold {
     private val ModuleSkeletonSpec.title: String get() = name.ifBlank { id }
 
     /**
+     * 官方 `zygisk.hpp`（0BSD）放在 resources 里**原样分发**。
+     *
+     * 不内联成 Kotlin 字符串，是因为这个文件里明写 `DO NOT MODIFY ANY CODE IN THIS HEADER`：
+     * 字节级不动它，是遵守这条最省事的办法（`ModuleScaffoldTest` 用哈希钉住）。
+     *
+     * 读不到时返回 null —— 由调用方决定怎么降级，不在这里抛异常把「新建模块」整个弄挂。
+     */
+    fun zygiskHeader(): String? =
+        ModuleScaffold::class.java.getResourceAsStream(ZYGISK_HEADER_RESOURCE)
+            ?.use { it.readBytes().toString(Charsets.UTF_8) }
+
+    private const val ZYGISK_HEADER_RESOURCE = "/dev/smithy/fs/zygisk.hpp"
+
+    /**
      * 骨架的全部条目（路径 → 文本内容），顺序即写入顺序。
      *
      * 独立于 [write] 暴露出来：调用方（工具层 / 界面）经常要先知道「会放进去哪些文件」，
@@ -99,6 +113,9 @@ object ModuleScaffold {
         files["post-fs-data.sh"] = postFsDataScript(spec)
         files["system.prop"] = SYSTEM_PROP
         if (spec.flavour == ModuleSkeletonSpec.Flavour.ZYGISK) {
+            // 头文件随包给：不然用户要先自己找到它、还要知道「不许改」，而少了它
+            // clang 只会报一串 file not found
+            zygiskHeader()?.let { files["jni/zygisk.hpp"] = it }
             files["jni/module.cpp"] = zygiskSource(spec)
             files["jni/CMakeLists.txt"] = cmakeLists(spec)
             files["jni/build.sh"] = buildScript(spec)
@@ -203,13 +220,12 @@ object ModuleScaffold {
     private fun zygiskSource(spec: ModuleSkeletonSpec): String = """
         // Zygisk 模块骨架（由 Smithy 生成，id: ${spec.id}）。
         //
-        // 编译需要 Magisk 官方的 zygisk.hpp —— 它带 0BSD 版权声明，并且文件里明确写着
-        // 「DO NOT MODIFY ANY CODE IN THIS HEADER」，所以**不随骨架分发**：
-        // 构建时自己放一份到这个目录（见同目录 README.md）。
+        // zygisk.hpp 就在这个目录里：官方样例工程的原件，0BSD，文件里写着
+        // 「DO NOT MODIFY ANY CODE IN THIS HEADER」—— 别改它。
 
         #include <jni.h>
         #include <android/log.h>
-        #include <cstring>
+        #include <string.h>
 
         #include "zygisk.hpp"
 
@@ -237,15 +253,17 @@ object ModuleScaffold {
             }
 
             void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
-                // 每个应用进程 fork 出来时都会走这里。此时进程还没有沙箱限制。
+                // 每个应用进程 fork 出来的时候都会走这里。此时进程还没有沙箱限制。
+                // nice_name 就是进程名（一般等于包名）—— 「只对某个软件生效」靠它筛。
                 const char *name = env->GetStringUTFChars(args->nice_name, nullptr);
                 matches = kTargetProcess[0] == '\0' ||
-                          (name != nullptr && std::strcmp(name, kTargetProcess) == 0);
+                          (name != nullptr && strcmp(name, kTargetProcess) == 0);
                 env->ReleaseStringUTFChars(args->nice_name, name);
             }
 
             void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
                 // 进程已经 specialized、还没跑应用自己的代码 —— 装 hook 一般放这里。
+                (void) args;  // 这里暂时用不上它；写出来是为了让 -Wall -Wextra 保持安静
                 if (!matches) return;
 
                 // TODO 针对目标软件做定制：改 JNI 实现、替掉某个方法、补一段初始化。
@@ -275,6 +293,10 @@ object ModuleScaffold {
         # -fvisibility=hidden：只让 zygisk.hpp 里标了 default visibility 的入口符号暴露出去，
         # 其余全部藏起来（模块和别的模块/宿主同名符号撞上会很难查）。
         target_compile_options(${spec.id} PRIVATE -Wall -Wextra -fno-exceptions -fno-rtti -fvisibility=hidden)
+
+        # -static-libstdc++：Zygisk 把模块 dlopen 进别人的进程，那个进程里没有
+        # libc++_shared.so —— 动态依赖它 = 装上了但不加载，而且不报错。
+        target_link_options(${spec.id} PRIVATE -static-libstdc++)
         target_link_libraries(${spec.id} PRIVATE log)
     """.trimIndent()
 
@@ -287,7 +309,9 @@ object ModuleScaffold {
     private fun buildScript(spec: ModuleSkeletonSpec): String = """
         #!/usr/bin/env bash
         # 编出 zygisk/<abi>.so。用法：ABIS="arm64-v8a" ./build.sh
-        # 需要 NDK；在手机上完成同样的事要等构建模块（clang + sysroot，见 docs/06 的 M6-B）。
+        # 这是「在电脑上编」的那条路，需要 NDK。
+        # 在手机上编走 Smithy 的 native 构建工具链（模块页的「编译 .so」/ module.build），
+        # 不需要这个脚本 —— 它只是给不想把工具链搬到手机上的人留的出口。
         set -e
 
         ndk="${D}ANDROID_NDK_HOME"
@@ -317,20 +341,18 @@ object ModuleScaffold {
     private val NATIVE_README = """
         # 这一档怎么编出来
 
-        骨架里的 `jni/` 只是**源码**，不是能直接生效的模块 —— Zygisk 要的是
-        `zygisk/<abi>.so`。
+        `jni/` 只是**源码**，不是能直接生效的模块 —— Zygisk 要的是 `zygisk/<abi>.so`。
 
-        1. 放头文件：把 Magisk 官方的 `zygisk.hpp` 复制到本目录。
-           - 它带 0BSD 版权声明，文件里写着 `DO NOT MODIFY ANY CODE IN THIS HEADER`，
-             所以骨架不分发它，构建时自己放一份。
-           - 来源：Magisk 的 zygisk-module-sample 仓库 `module/jni/zygisk.hpp`。
-        2. 改目标：`module.cpp` 里的 `kTargetProcess` 填目标软件的进程名（一般就是包名）。
-        3. 编译：`ABIS="arm64-v8a" ./build.sh`（需要 NDK）。
-           产物会落在 `zygisk/arm64-v8a.so` —— Magisk 按**文件名**认 ABI。
-        4. 打包刷入：模块页保存 / `module.package`，再 `module.install`（需要 root），
-           生效要 `zygote.restart` 或重启。
+        1. 改目标：`module.cpp` 里的 `kTargetProcess` 填目标软件的进程名（一般就是包名）。
+           `zygisk.hpp` 已经在本目录（官方原件，0BSD，文件里写着不许改它的内容）。
+        2. 编译，两条路：
+           - **手机上**：模块页的「编译 .so」，或者 `module.build`（AI 走这条）。
+             产物会直接写进 zip 的 `zygisk/<abi>.so`。
+           - **电脑上**：`ABIS="arm64-v8a" ./build.sh`（需要 NDK），再把产物拷回 `zygisk/`。
+        3. 刷入：`module.install`（需要 root），生效要 `module.zygote_restart` 或重启。
 
-        在手机上从源码编到 so，要等 M6-B 的构建模块（clang + Android sysroot，约 300–400MB）。
-        在它到位之前，这一档只能在外面编好 so 再放进 zip。
+        理由：Magisk 按**文件名**认 ABI，所以产物必须正好叫 `zygisk/arm64-v8a.so`。
+        编译链要 clang + Android sysroot（约 300–400MB，按需下载，不进主包；见 docs/06 的 M6-B）。
+        没有工具链时，手机上那条路会明确说出缺什么，而不是静默失败。
     """.trimIndent()
 }

@@ -44,12 +44,14 @@ import dev.smithy.design.SmithyIconButton
 import dev.smithy.design.SmithyIcons
 import dev.smithy.design.SmithyDialogTitle
 import dev.smithy.design.SmithyMotion
+import dev.smithy.design.SmithyMono
 import dev.smithy.design.SmithyRowMeta
 import dev.smithy.design.SmithyRowTitle
 import dev.smithy.design.SmithySpacing
 import dev.smithy.design.SmithyTopBar
 import dev.smithy.design.icon
 import dev.smithy.fs.ModuleProp
+import dev.smithy.fs.NativeToolchains
 
 /**
  * 模块页：Magisk / Zygisk 模块的查看、改动、打包与刷入。
@@ -81,6 +83,8 @@ fun ModuleScreen(
     onCancelEdit: () -> Unit,
     onSaveEntry: () -> Unit,
     onInstall: () -> Unit,
+    /** 把 jni/ 下的源码编成 zygisk/<abi>.so。没有工具链时它只回报原因，不瞎跑一次编译。 */
+    onCompile: () -> Unit,
     onSetEnabled: (String, Boolean) -> Unit,
     onScheduleRemove: (String) -> Unit,
     onUninstall: (String) -> Unit,
@@ -177,6 +181,7 @@ fun ModuleScreen(
             } else {
                 PropCard(state, onVersion, onVersionCode, onName, onDescription, onSaveProp)
                 StructureCard(state)
+                NativeCard(state, onCompile)
                 EntriesCard(state, onEditEntry)
                 InstallCard(state, onInstall)
             }
@@ -470,6 +475,63 @@ private fun StructureCard(state: ModuleUiState) {
         layout.warnings.forEach { w ->
             Spacer(Modifier.height(SmithySpacing.gap))
             WarnBanner(w)
+        }
+    }
+}
+
+/**
+ * native 编译。
+ *
+ * 只在包里**有 `jni/` 源码**时出现 —— 纯脚本模块不需要编译，给它看一张编译卡是噪音。
+ *
+ * 这一块存在的理由是那句话：**源码刷进去不会生效**。zygisk 模块要的是
+ * `zygisk/<abi>.so`，而手机上有多少人以为「把源码放进 zip 就行了」，
+ * 就会有多少次「刷了、重启了、什么都没发生」的排查。
+ *
+ * 工具链不可用时不把按钮做成可点却没反应的样子：按钮置灰（点它会震一下「现在不行」），
+ * 下面直接把缺什么、放哪儿写出来。
+ */
+@Composable
+private fun NativeCard(state: ModuleUiState, onCompile: () -> Unit) {
+    val sources = state.entries.filter {
+        it.startsWith("jni/") && it.substringAfterLast('.', "").lowercase() in setOf("cpp", "cc", "cxx", "c")
+    }
+    if (sources.isEmpty()) return
+
+    val toolchain = NativeToolchains.current()
+    val ready = toolchain?.available() == true
+    val built = state.entries.filter { it.startsWith("zygisk/") }
+
+    Section("编译（native）") {
+        Text(
+            "源码在 jni/ 下（${sources.size} 个），但 Magisk 只认 zygisk/<abi>.so —— " +
+                "源码本身刷进去不会生效，得先编出来。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(SmithySpacing.gutter))
+        Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
+            Pill("编译 arm64-v8a", onCompile, icon = SmithyIcons.Run, enabled = ready)
+        }
+        Spacer(Modifier.height(SmithySpacing.gap))
+        if (ready) {
+            // 可用时把路径写出来：编译失败时这几行就是第一手线索
+            Text(
+                toolchain!!.describe(),
+                style = SmithyRowMeta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            // 和 module.build、以及 NativeToolchains.require() 的异常同一句话
+            WarningNote(NativeToolchains.missingHint())
+        }
+        if (built.isNotEmpty()) {
+            Spacer(Modifier.height(SmithySpacing.gap))
+            Text(
+                "已编出：${built.joinToString()}",
+                style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

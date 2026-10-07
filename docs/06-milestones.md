@@ -157,13 +157,22 @@
 
 改模块逻辑的唯一正当路径是**改源码重编**，不是二进制硬改。
 
-> **当前状态（部分落地）**：模块骨架已经能生成了 —— `module.create` / 模块页的「新建模块」
-> （`core:fs` 的 `ModuleScaffold`）：`module.prop` + `service.sh` + `post-fs-data.sh` +
-> `system.prop`，结构约束（id 合法性、条目在根上、脚本）一次钉对，**shell 档刷入即生效**。
-> `flavour=zygisk` 会多给 `jni/`（`module.cpp` + `CMakeLists.txt` + `build.sh` + 说明），
-> 但**没有编译链**：`zygisk/<abi>.so` 得在外面编好放进去（骨架刻意不放占位 so ——
-> 放一个会让「装上了但没生效」变得极难排查）。下面第 1 条（clang + sysroot 的构建模块）
-> 与第 5 条（分发 `zygisk.hpp`）仍未做。
+> **当前状态（除工具链分发外已落地）**
+>
+> - **骨架**（`core:fs` 的 `ModuleScaffold`，走 `module.create` 与模块页的「新建模块」）：
+>   `module.prop` + `service.sh` + `post-fs-data.sh` + `system.prop`，结构约束一次钉对，
+>   **shell 档刷入即生效**；`flavour=zygisk` 另给 `jni/`（`module.cpp` + `CMakeLists.txt` +
+>   `build.sh` + 说明）**并随包带上官方 `zygisk.hpp`**（资源里原样分发，哈希钉住 —— 即下面第 5 条）。
+> - **编译链**：`core:fs` 的 `NativeToolchain`（clang 驱动：`--target` / `--sysroot` / `-isystem` /
+>   `-L` / `-o <abi>.so`）+ `ModuleNativeBuild`（源码 → `zygisk/<abi>.so` → 写回新 zip，原包不动）
+>   + 工具层的 `native.toolchain` / `module.build` + 模块页的「编译 .so」。人都走同一条路径，
+>   产物名就是 ABI 名（Magisk 按文件名认）。
+> - **还差的**：第 1 条 —— clang + sysroot + libc++（300–400MB）**从哪儿下**。目前 App 起来时
+>   扫 `filesDir/native-toolchain`（认自己的 bundle 布局和 NDK 的
+>   `toolchains/llvm/prebuilt/<host>` 布局），没有就说清缺什么。做一个带进度/校验/许可页的
+>   下载器是独立的一批活（M5 的下载项机制）。
+> - **没验证的**：真机 ABI 矩阵（内置 Zygisk / 独立实现 / 无 Root 三种环境），以及
+>   「编出来的 so 在设备上真的能被加载」—— 这两条要真机。
 
 **任务**
 1. 以 M5 的「构建模块」为底座，追加 `clang` + Android `sysroot` + `libc++`（约 300-400MB，按需下载，不进主包）
