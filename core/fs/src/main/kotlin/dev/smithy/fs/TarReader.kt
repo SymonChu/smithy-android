@@ -20,11 +20,24 @@ import java.util.zip.GZIPInputStream
  */
 class TarReader private constructor(private val raw: InputStream) : AutoCloseable {
 
-    /** 一个条目（展示用）。dir 由「名字以 / 结尾或 size==0 且 type 是目录」判断。 */
+    /**
+     * 一个条目。
+     *
+     * [dir] 由「名字以 / 结尾或 type 是目录」判断；后三项是**解包**需要的：
+     * 只看路径与大小会把符号链接当成 0 字节的普通文件写出来（Alpine 的
+     * `/bin/sh -> /bin/busybox` 就这么变成空文件，整个 rootfs 就废了），
+     * 权限位则决定解出来的东西能不能执行。只展示的调用方可以不管它们。
+     */
     data class TarEntry(
         override val path: String,
         override val size: Long,
         override val dir: Boolean,
+        /** '0'/'7' 普通文件、'5' 目录、'2' 符号链接、'1' 硬链接。 */
+        val typeflag: Char = '0',
+        /** 八进制权限位（如 0o755 / 0o644）。 */
+        val mode: Int = 0,
+        /** 符号/硬链接的指向（绝对或相对）。 */
+        val linkTarget: String? = null,
     ) : ArchiveEntry
 
     private var remainingInCurrent = 0L
@@ -82,8 +95,13 @@ class TarReader private constructor(private val raw: InputStream) : AutoCloseabl
         val header = readHeader() ?: return null
         val name = header.substring(0, 100).cutAtNul()
         if (name.isEmpty()) return null
+        // ustar 的长路径：前缀字段（345..500）拼在名字前面。非 ustar 的头那里是 0，取出来是空串
+        val prefix = header.substring(345, 500).cutAtNul()
         val size = octal(header.substring(124, 136).cutAtNul())
-        val typeChar = header.getOrNull(156) ?: '0'
+        // getOrNull 给的是 Byte；直接 `?: '0'` 会让类型退化成 Comparable & Serializable
+        val typeChar: Char = header.getOrNull(156)?.toInt()?.toChar() ?: '0'
+        val mode = octal(header.substring(100, 108).cutAtNul()).toInt()
+        val link = header.substring(157, 257).cutAtNul()
         val isDir = name.endsWith("/") || typeChar == '5'
         // remaining 记「数据 + padding」：nextEntry 没被读时整体跳；
         // 被 dataStream 读过时它只扣掉已读部分（见 dataStream 的记账注释）
@@ -91,8 +109,16 @@ class TarReader private constructor(private val raw: InputStream) : AutoCloseabl
         dataSizeInCurrent = size
         entryCount++
         // 前缀 ./ 去掉：tar 里常见但显示难看
-        val cleanName = name.removePrefix("./").removeSuffix("/")
-        return TarEntry(cleanName, size, isDir)
+        val full = if (prefix.isEmpty()) name else "$prefix/$name"
+        val cleanName = full.removePrefix("./").removeSuffix("/")
+        return TarEntry(
+            path = cleanName,
+            size = size,
+            dir = isDir,
+            typeflag = typeChar,
+            mode = mode,
+            linkTarget = link.takeIf { (typeChar == '2' || typeChar == '1') && it.isNotEmpty() },
+        )
     }
 
     private fun skipRemaining() {

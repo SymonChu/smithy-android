@@ -71,6 +71,8 @@
 | `module.create` | W | dir, id, name?, version?, versionCode?, author?, description?, flavour=shell\|zygisk | **从零建一个模块骨架**（其余模块工具都要求先有一个 zip）。`module.prop` / `service.sh` / `post-fs-data.sh` / `system.prop` 按规范摆好，条目在根上。`flavour=shell` 刷入即生效；`flavour=zygisk` 另给 `jni/`（含官方 `zygisk.hpp`）的 native 源码骨架，`.so` 要自己编（见 M6-B），不会放占位的 so |
 | `native.toolchain` | R | — | 看 native 编译工具链在不在、是哪一份（clang + sysroot 路径）。**要在 zygisk 模块里编 `.so` 之前先问它**，别等编译失败才发现设备上没有工具链 |
 | `module.build` | W | zip, abi=arm64-v8a, api=26, out?, flags? | 把模块 `jni/` 下的 C++ 源码编成 `zygisk/<abi>.so` 并写回**新** zip（原包不动）。**改完模块逻辑让它真生效的那一步** —— Magisk 只认 `zygisk/<abi>.so`，源码刷进去不会生效。需要工具链（M6-B 的下载项），没有时工具会说清缺什么 |
+| `component.list` | R | — | 可选组件（M5）：装没装、多大、装在哪个目录、要不要 root、许可，外加 native 工具链当前能不能用。**编 `.so` 之前先问它** |
+| `component.install` | W | id=\|file=, kind?, sha256?, strip? | 下载并安装一个可选组件（`id=rootfs-alpine` 走登记地址），或把手机本地的一份归档灌进去（`file=/sdcard/Download/bundle.zip`）。装完自动重扫工具链，能编就说能编 |
 | `module.open` | W | path | 打开模块 zip 为工作区，返回 moduleWorkspaceId + 元数据摘要；`workspace.status` / `patch.*` / `fs.*` 对模块工作区同样可用 |
 | `module.inspect` | R | workspaceId | 用 `module.prop` 判定模块、用 `zygisk/*.so` 判定 Zygisk 模块；列脚本 / overlay / ABI 覆盖，并与设备 ABI 比对（缺当前 ABI 显式警告） |
 | `module.prop_get` | R | workspaceId | 结构化返回 id / name / version / versionCode / author / description，缺失字段显式标出 |
@@ -100,7 +102,7 @@
 | 工具 | Effect | 说明 |
 |---|---|---|
 | `tunnel.start/stop` | W | cloudflared 公网预览（对齐 CodeForge） |
-| `rootfs.exec` | D | 需先下载 rootfs 模块 |
+| `rootfs.exec` | D | 需先下载 rootfs 模块（**下载/安装已具备**：`component.install id=rootfs-alpine`；chroot 里执行还没接） |
 | `build.gradle_assemble` | W | 需先下载构建模块 |
 | `build.module_assemble` | W | 需先下载 native 构建模块（clang + sysroot），从源码编译 `.so`；改模块逻辑的唯一正当路径 —— **已实现为 `module.build`**（见上表），还差工具链二进制的分发 |
 

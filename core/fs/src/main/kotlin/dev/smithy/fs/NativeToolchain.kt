@@ -213,6 +213,28 @@ object NativeToolchains {
         return t
     }
 
+    /** 工具链可能在哪几个地方 —— App 起来时、以及刚装完一个可选组件之后都扫这几个。 */
+    fun standardRoots(filesDir: File): List<File> = listOf(
+        // 先看可选组件装过去的（AddOnManager 的根 + 它的工具链子目录）
+        File(File(filesDir, "addon"), AddOnKind.TOOLCHAIN.dirName),
+        // 再看用户手工解进去的
+        File(filesDir, AddOnKind.TOOLCHAIN.dirName),
+        File(filesDir, "ndk"),
+    )
+
+    /**
+     * 扫一批目录，把第一份能用的登记上去。返回登记的那份（都没有就是 null）。
+     *
+     * 装完可选组件要**立刻重扫**：装之前说「缺工具链」，装之后同一句话就不能再出现 ——
+     * 否则用户会以为装了个没用的东西。
+     */
+    fun scan(vararg roots: File): NativeToolchain? {
+        val found = roots.filter { it.isDirectory }
+            .firstNotNullOfOrNull { root -> locateIn(root)?.takeIf { it.available() } }
+        register(found)
+        return found
+    }
+
     /**
      * 在一个目录里找工具链。
      *

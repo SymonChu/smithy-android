@@ -51,7 +51,10 @@ import dev.smithy.design.SmithySpacing
 import dev.smithy.design.SmithyTopBar
 import dev.smithy.design.icon
 import dev.smithy.fs.ModuleProp
+import dev.smithy.fs.AddOnCatalog
+import dev.smithy.fs.AddOnHost
 import dev.smithy.fs.NativeToolchains
+import dev.smithy.fs.humanSize
 
 /**
  * 模块页：Magisk / Zygisk 模块的查看、改动、打包与刷入。
@@ -85,6 +88,10 @@ fun ModuleScreen(
     onInstall: () -> Unit,
     /** 把 jni/ 下的源码编成 zygisk/<abi>.so。没有工具链时它只回报原因，不瞎跑一次编译。 */
     onCompile: () -> Unit,
+    /** 装一个可选组件（现在只有 Alpine rootfs 这一条，走下载）。 */
+    onInstallComponent: (String) -> Unit,
+    /** 把手机本地的一份归档灌进去 —— 目前装上 native 工具链的唯一一条路。 */
+    onImportComponent: () -> Unit,
     onSetEnabled: (String, Boolean) -> Unit,
     onScheduleRemove: (String) -> Unit,
     onUninstall: (String) -> Unit,
@@ -181,7 +188,7 @@ fun ModuleScreen(
             } else {
                 PropCard(state, onVersion, onVersionCode, onName, onDescription, onSaveProp)
                 StructureCard(state)
-                NativeCard(state, onCompile)
+                NativeCard(state, onCompile, onInstallComponent, onImportComponent)
                 EntriesCard(state, onEditEntry)
                 InstallCard(state, onInstall)
             }
@@ -492,7 +499,12 @@ private fun StructureCard(state: ModuleUiState) {
  * 下面直接把缺什么、放哪儿写出来。
  */
 @Composable
-private fun NativeCard(state: ModuleUiState, onCompile: () -> Unit) {
+private fun NativeCard(
+    state: ModuleUiState,
+    onCompile: () -> Unit,
+    onInstallComponent: (String) -> Unit,
+    onImportComponent: () -> Unit,
+) {
     val sources = state.entries.filter {
         it.startsWith("jni/") && it.substringAfterLast('.', "").lowercase() in setOf("cpp", "cc", "cxx", "c")
     }
@@ -501,6 +513,9 @@ private fun NativeCard(state: ModuleUiState, onCompile: () -> Unit) {
     val toolchain = NativeToolchains.current()
     val ready = toolchain?.available() == true
     val built = state.entries.filter { it.startsWith("zygisk/") }
+    val addons = AddOnHost.current()
+    val rootfs = AddOnCatalog.rootfsAlpine
+    val rootfsInstalled = addons?.installed(rootfs) != null
 
     Section("编译（native）") {
         Text(
@@ -512,6 +527,21 @@ private fun NativeCard(state: ModuleUiState, onCompile: () -> Unit) {
         Spacer(Modifier.height(SmithySpacing.gutter))
         Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
             Pill("编译 arm64-v8a", onCompile, icon = SmithyIcons.Run, enabled = ready)
+            // 没有工具链时给出两条**真能走的路**，而不是只写一句「缺工具链」：
+            // rootfs 是官方能直接下的那一条；本地包是眼下唯一能拿到 arm64 clang 的一条。
+            if (!ready) {
+                Pill(
+                    label = if (rootfsInstalled) {
+                        "Alpine rootfs 已装（${addons?.installed(rootfs)?.let { humanSize(it.bytes) } ?: ""}）"
+                    } else {
+                        "下载 Alpine rootfs（${humanSize(rootfs.bytes)}）"
+                    },
+                    onClick = { onInstallComponent(rootfs.id) },
+                    icon = SmithyIcons.Download,
+                    enabled = !rootfsInstalled,
+                )
+                Pill("导入工具链包…", onImportComponent, icon = SmithyIcons.OpenFolder)
+            }
         }
         Spacer(Modifier.height(SmithySpacing.gap))
         if (ready) {

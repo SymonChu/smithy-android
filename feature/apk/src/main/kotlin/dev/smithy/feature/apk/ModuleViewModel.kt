@@ -12,6 +12,12 @@ import dev.smithy.fs.ModuleSkeletonSpec
 import dev.smithy.fs.ModuleNativeBuild
 import dev.smithy.fs.NativeAbi
 import dev.smithy.fs.NativeToolchains
+import dev.smithy.fs.AddOnArchive
+import dev.smithy.fs.AddOnCatalog
+import dev.smithy.fs.AddOnHost
+import dev.smithy.fs.AddOnKind
+import dev.smithy.fs.AddOnProgress
+import dev.smithy.fs.AddOnSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -235,6 +241,97 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
     // ── 脚本 / 文本条目 ─────────────────────────────────────────
 
     // ── native 编译 ─────────────────────────────────────────────
+
+    // ── 可选组件（文档里的 M5「可选模块」）──────────────────────
+
+    /**
+     * 装一个可选组件（下载 + 校验 + 解包）。
+     *
+     * 进度写进 [ModuleUiState.busy]：几百 MB 的下载必须看得见在动，
+     * 否则用户会以为卡死然后去杀进程 —— 那正是「下了一半」的来源。
+     */
+    fun installComponent(id: String) {
+        val mgr = AddOnHost.current()
+            ?: return message("这台设备上没登记可选组件的安装位置（App 启动时干这活）", isError = true)
+        val spec = AddOnCatalog.find(id)
+            ?: return message("没有这个组件：$id", isError = true)
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "准备下载 ${spec.name}…", message = null, isError = false) }
+            val res = withContext(Dispatchers.IO) {
+                mgr.install(spec) { p ->
+                    _state.update { s -> s.copy(busy = "${spec.name}：${phaseText(p.phase)} ${p.percent}%") }
+                }
+            }
+            afterComponent(res.ok, spec.name, res.message, res.hint)
+        }
+    }
+
+    /**
+     * 装手机本地的一份归档。
+     *
+     * 这是**目前唯一能装上 native 工具链的路**：给 arm64 安卓用的 clang 官方没有现成的
+     * （NDK 只有 x86_64/darwin/windows 宿主机版，LLVM 也不发 android 目标），
+     * 得在外面产出一份、传到手机上，再从这里灌进去。
+     */
+    fun importComponent(archive: File) {
+        val mgr = AddOnHost.current()
+            ?: return message("这台设备上没登记可选组件的安装位置（App 启动时干这活）", isError = true)
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "装 ${archive.name}…", message = null, isError = false) }
+            val spec = AddOnSpec(
+                id = "local-" + archive.nameWithoutExtension.replace('.', '-'),
+                name = archive.name,
+                summary = "从本地灌进来的（${archive.absolutePath}）",
+                kind = AddOnKind.TOOLCHAIN,
+                url = "",
+                bytes = archive.length(),
+                // 本地灌进来的没法预先登记校验值：这里不假装校验过，装完由编译器自己去证明
+                sha256 = "",
+                archive = if (archive.name.endsWith(".zip", ignoreCase = true)) AddOnArchive.ZIP else AddOnArchive.TAR_GZ,
+                license = "随包自带，见包内说明",
+                homepage = "",
+                stripComponents = 1,
+            )
+            val res = withContext(Dispatchers.IO) {
+                mgr.installFromLocal(spec, archive) { p ->
+                    _state.update { s -> s.copy(busy = "${archive.name}：${phaseText(p.phase)} ${p.percent}%") }
+                }
+            }
+            afterComponent(res.ok, archive.name, res.message, res.hint)
+        }
+    }
+
+    /**
+     * 装完之后：**立刻重扫工具链**。
+     *
+     * 装之前说「缺工具链」，装之后同一句话还能看见的话，用户会以为装了个没用的东西 ——
+     * 所以这里必须把「现在能不能编」重新算一遍再说给他听。
+     */
+    private fun afterComponent(ok: Boolean, name: String, message: String?, hint: String?) {
+        if (!ok) {
+            return message(listOfNotNull(message, hint).joinToString("\n"), isError = true)
+        }
+        val found = NativeToolchains.scan(
+            *NativeToolchains.standardRoots(getApplication<Application>().filesDir).toTypedArray(),
+        )
+        _state.update {
+            it.copy(
+                busy = null,
+                isError = found == null,
+                message = if (found != null) {
+                    "$name 装好了，编译工具链已就绪"
+                } else {
+                    "$name 装好了。但还没找到可用的 clang —— 工具链包解出来的目录里要有 bin/clang++ 和 sysroot/（见编译卡里的说明）"
+                },
+            )
+        }
+    }
+
+    private fun phaseText(phase: AddOnProgress.Phase): String = when (phase) {
+        AddOnProgress.Phase.DOWNLOAD -> "下载中"
+        AddOnProgress.Phase.VERIFY -> "校验中"
+        AddOnProgress.Phase.EXTRACT -> "解包中"
+    }
 
     /**
      * 把 `jni/` 下的源码编成 `zygisk/<abi>.so`，产出写成 `<原名>-<abi>.zip` 并打开它。

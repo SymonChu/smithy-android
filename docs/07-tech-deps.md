@@ -56,6 +56,8 @@
 | zip 读写 | JDK 自带 `java.util.zip` | — | 模块 zip 就是普通 deflate zip，无特殊结构要求 |
 | ELF 解析 | 自研最小实现（ELF 头 + 节表 + 字符串表，32/64 位小端） | 自有 | 只做只读检视与**等长**字符串替换；不引第三方 binutils |
 | 刷入目标约定 | `module.prop` / `zygisk/<abi>.so` / `disable` / `remove` 标记 | — | Magisk 模块规范，非依赖 |
+| 可选组件下载（`:core:fs`） | OkHttp + okio | Apache-2.0 | 续传（Range）、跟随跳转、进度回调。原只在 `:core:ai` / `:core:mcp` 用，M5 的 `AddOnManager` 也用上了 |
+| rootfs（下载项，不进主包） | Alpine minirootfs 3.20（aarch64） | 各组件各自带许可（含 GPL-2.0 的 busybox 等） | `component.install id=rootfs-alpine` 按需下（3.9MB，sha256 对着上游的 `.sha256` 校验过）。它作为**独立程序**被用户下进来使用，不改变 App 自身许可；装/卸都在 App 里 |
 | Zygisk API 头 | `zygisk.hpp`（来自官方模块样例工程） | **0BSD** | **已核实**：措辞为 "permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted"，最宽松档，**与 GPL-3.0 完全兼容**。分发须保留版权声明，且头文件内明写 `DO NOT MODIFY ANY CODE IN THIS HEADER`。**现已随 zygisk 骨架分发**：原样放在 `core/fs/src/main/resources/dev/smithy/fs/zygisk.hpp`，`ModuleScaffoldTest` 用 SHA-256 钉住「一字未改」（要更新就换成官方原件） |
 | native 编译（M6-B，可选模块） | clang + Android sysroot + libc++ | Apache-2.0 with LLVM exception | 约 300-400MB，**按需下载，不进主包**。调用侧只依赖 `NativeToolchain` 接口（找不到就说清缺什么），工具链二进制放哪儿、怎么下、许可页怎么写，属下载器那一批（M5）的活 |
 

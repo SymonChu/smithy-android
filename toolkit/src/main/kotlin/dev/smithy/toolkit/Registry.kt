@@ -37,6 +37,8 @@ import dev.smithy.toolkit.tools.ModuleSetEnabledTool
 import dev.smithy.toolkit.tools.ModuleSetPropTool
 import dev.smithy.toolkit.tools.ModuleUninstallTool
 import dev.smithy.toolkit.tools.ModuleWriteTextTool
+import dev.smithy.toolkit.tools.ComponentInstallTool
+import dev.smithy.toolkit.tools.ComponentListTool
 import dev.smithy.toolkit.tools.ModuleBuildTool
 import dev.smithy.toolkit.tools.NativeToolchainTool
 import dev.smithy.toolkit.tools.ElfInspectTool
@@ -247,6 +249,7 @@ fun defaultTools(): List<Tool> = listOf(
     // native 编译：把 jni/ 源码编成 zygisk/<abi>.so。工具链由 App 层注册，
     // 没有工具链时工具会明确说缺什么（而不是让模型反复重试同一个调用）
     NativeToolchainTool, ModuleBuildTool,
+    ComponentListTool, ComponentInstallTool,
     // so 的字节层：只做等长替换，变长与「被按内容索引的节」一律拒绝
     ElfInspectTool, ElfStringsTool, ElfPatchStringTool,
 )

@@ -104,6 +104,14 @@
 
 可选模块：rootfs（Alpine，跑 apktool/任意 CLI）、构建模块（JDK+Gradle）、native 构建模块（clang+sysroot，见 M6-B）、隧道（cloudflared）、本地模型（llama.cpp）、语音（Vosk+TTS）、定时任务、MCP 服务端对外、插件系统。
 
+> **当前状态（机制已落地）**：`core:fs` 的 `AddOnManager` + `component.list` / `component.install` + 模块页入口。
+> 下载可续传（`.part` + Range；服务器不认续传就重下，不把两段接起来）、装前核对上游公布的 SHA-256、
+> 解包支持 zip / tar.gz（**符号链接与可执行位还原**、路径穿越条目丢弃、可 strip 层数、可只取某个子树）、
+> 装到约定目录并记账、可卸载，进度写进界面（几百 MB 的下载不能让人以为卡死）。
+> 清单里现在只有一条真条目：**rootfs-alpine**（Alpine 3.20 aarch64 minirootfs，3.9MB，URL 与 sha256
+> 都对着上游校验过）。加条目请照 `AddOnCatalog` 的注释来 —— 编一个「大概这个地址」的条目，
+> 等于让用户白下一趟。
+
 **验收**：模块可独立下载/卸载，不装模块时 App 体积 < 40MB。
 
 ---
@@ -167,12 +175,28 @@
 >   `-L` / `-o <abi>.so`）+ `ModuleNativeBuild`（源码 → `zygisk/<abi>.so` → 写回新 zip，原包不动）
 >   + 工具层的 `native.toolchain` / `module.build` + 模块页的「编译 .so」。人都走同一条路径，
 >   产物名就是 ABI 名（Magisk 按文件名认）。
-> - **还差的**：第 1 条 —— clang + sysroot + libc++（300–400MB）**从哪儿下**。目前 App 起来时
->   扫 `filesDir/native-toolchain`（认自己的 bundle 布局和 NDK 的
->   `toolchains/llvm/prebuilt/<host>` 布局），没有就说清缺什么。做一个带进度/校验/许可页的
->   下载器是独立的一批活（M5 的下载项机制）。
-> - **没验证的**：真机 ABI 矩阵（内置 Zygisk / 独立实现 / 无 Root 三种环境），以及
->   「编出来的 so 在设备上真的能被加载」—— 这两条要真机。
+> - **工具链怎么弄到手机上（三条路，入口都接上了）**
+>   1. **下载**：`component.install id=rootfs-alpine` / 模块页「下载 Alpine rootfs」——
+>      4MB 的 Alpine minirootfs（真 URL、上游公布的 sha256、可续传），是「在它里面装 clang」
+>      那条路的宿主，装到 `filesDir/addon/rootfs`。
+>   2. **灌本地包**：`component.install file=/sdcard/Download/bundle.zip` / 模块页「导入工具链包…」——
+>      把外面产出的工具链包（`bin/clang++` + `sysroot/`）解到 `filesDir/addon/native-toolchain`；
+>      装完立刻重扫，能编就说能编。
+>   3. **手工解**到 `filesDir/native-toolchain` 或 `filesDir/ndk`（认 NDK 的
+>      `toolchains/llvm/prebuilt/<host>` 布局）。
+>
+> - **还差的（卡在同一个物理事实上）**：**给 arm64 安卓用的 clang 二进制**。
+>   Google 的 NDK 只发 x86_64/darwin/windows 宿主机版（在手机上跑不起来），
+>   LLVM 官方 release 也没有 android 目标（核对过 17/18/19 的资产表）。两条出路：
+>   a. **rootfs + chroot**：Alpine 里 `apk add clang`（arm64 原生构建），拿 NDK 的 sysroot
+>      当 `--sysroot` 交叉编。缺 root 通道执行（`rootfs.exec`：libsu + chroot）与真机调一轮。
+>   b. **自建 bundle**：在 Linux 上用 NDK 交叉构建、或从 Termux 的包组装一份 bionic clang，
+>      打成 zip（`bin/` + `sysroot/`）传到手机，走上面第 2 条；产出一份之后把它登记进
+>      `AddOnCatalog`，「下载」那条路也就通了。
+>
+> - **没验证的**：真机 ABI 矩阵（内置 Zygisk / 独立实现 / 无 Root 三种环境）、
+>   「编出来的 so 在设备上真的能被加载」、以及**从应用私有目录执行二进制**这条
+>   （Android 10+ 对可写目录的执行策略，见 `SmithyApp.addOnRoot` 的注释）—— 这三条要真机。
 
 **任务**
 1. 以 M5 的「构建模块」为底座，追加 `clang` + Android `sysroot` + `libc++`（约 300-400MB，按需下载，不进主包）

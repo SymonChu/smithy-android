@@ -127,6 +127,32 @@ fun ApkWorkbenchScreen(
         }
     }
 
+    /**
+     * 灌一份工具链包进来。
+     *
+     * 为什么要从本地选文件而不是「让 App 自己下」：给 arm64 安卓用的 clang 官方没有现成的
+     * （NDK 只有 x86_64/darwin/windows 宿主机版，LLVM 也不发 android 目标），只能在外面产出一份
+     * 再传进手机。所以这条「从文件灌进去」的路是必需项，不是备胎。
+     */
+    val bundlePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val dst = withContext(Dispatchers.IO) {
+                    // 归档要能按名字判断 zip/tar、还要反复读：先落到缓存目录
+                    val name = uri.lastPathSegment?.substringAfterLast('/') ?: "toolchain.zip"
+                    val f = File(ctx.cacheDir, "addon-${System.currentTimeMillis()}-$name")
+                    ctx.contentResolver.openInputStream(uri)?.use { input ->
+                        f.outputStream().use { input.copyTo(it) }
+                    }
+                    f
+                }
+                moduleVm.importComponent(dst)
+            }
+        }
+    }
+
     Column(modifier.fillMaxSize()) {
         // 标签行常驻在「有 apk」或「停在模块标签」时。
         // apk 那几档在没打开包时点了也没内容，所以那种情况下不显示整行，
@@ -156,6 +182,8 @@ fun ApkWorkbenchScreen(
                     onInstall = moduleVm::install,
                     // native 编译：zygisk 那一档只有编出 zygisk/<abi>.so 才会生效
                     onCompile = { moduleVm.compile() },
+                    onInstallComponent = moduleVm::installComponent,
+                    onImportComponent = { bundlePicker.launch(arrayOf("*/*")) },
                     onSetEnabled = moduleVm::setEnabled,
                     onScheduleRemove = moduleVm::scheduleRemove,
                     onUninstall = moduleVm::uninstallNow,
