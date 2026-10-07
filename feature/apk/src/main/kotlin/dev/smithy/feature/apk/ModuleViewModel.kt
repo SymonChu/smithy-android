@@ -7,6 +7,8 @@ import dev.smithy.engine.ModuleChannels
 import dev.smithy.fs.ModuleLayout
 import dev.smithy.fs.ModuleProp
 import dev.smithy.fs.ModuleProject
+import dev.smithy.fs.ModuleScaffold
+import dev.smithy.fs.ModuleSkeletonSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -117,6 +119,57 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
             zipPath = null, prop = null, layout = null, entries = emptyList(),
             editing = null, editingText = "", packaged = null, message = null,
         )
+    }
+
+    // ── 新建 ────────────────────────────────────────────────────
+
+    /**
+     * 从骨架新建一个模块，建好直接打开。
+     *
+     * 骨架的结构约束（id 合法性、条目在根上、脚本、system.prop）交给
+     * [ModuleScaffold] —— 在这里再挑一遍是重复，而且那几条的判定标准将来只会在
+     * 一个地方改。这里只管**放在哪**和**打开它**。
+     *
+     * 放应用私有目录（`filesDir/modules/`）：新建的模块还没有「用户选的位置」，
+     * 放在自己目录里最省事；要在别处留一份时走「另存」，不在别人的可见目录里
+     * 留半成品。
+     *
+     * [zygisk] 只影响生成出来的是源码骨架还是纯脚本 —— 前者要自己编出 `.so`
+     * 才生效（这一步手机上还没有工具链，见 docs/06 的 M6-B）。
+     */
+    fun create(id: String, name: String, description: String, zygisk: Boolean = false) {
+        val clean = id.trim()
+        // 先校验再落盘：非法 id 生成的模块 Magisk 是**静默跳过**的（列表里都不出现），
+        // 早一步说清比事后去设备上查便宜得多
+        ModuleProp.validateId(clean)?.let { return message(it, isError = true) }
+
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "建模块…", message = null, isError = false) }
+            try {
+                val zip = withContext(Dispatchers.IO) {
+                    val dir = File(getApplication<Application>().filesDir, "modules").apply { mkdirs() }
+                    val target = File(dir, "$clean.zip")
+                    ModuleScaffold.write(
+                        ModuleSkeletonSpec(
+                            id = clean,
+                            name = name.trim().ifBlank { clean },
+                            description = description.trim(),
+                            flavour = if (zygisk) {
+                                ModuleSkeletonSpec.Flavour.ZYGISK
+                            } else {
+                                ModuleSkeletonSpec.Flavour.SHELL
+                            },
+                        ),
+                        target,
+                    )
+                    target
+                }
+                // 建好就直接打开它：新模块的下一步一定是「改点东西再刷」，而不是先看一个空页
+                open(zip.absolutePath)
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
     }
 
     // ── 元数据 ──────────────────────────────────────────────────

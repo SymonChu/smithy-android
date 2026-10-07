@@ -2,6 +2,16 @@ package dev.smithy.feature.apk
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,38 +21,50 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.ScrollableTabRow
-import androidx.compose.material3.Tab
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.smithy.design.SmithyEmptyState
+import dev.smithy.design.SmithyIconButton
+import dev.smithy.design.SmithyIcons
+import dev.smithy.design.SmithyMotion
+import dev.smithy.design.SmithySkeletonList
+import dev.smithy.design.SmithySpacing
+import dev.smithy.design.SmithyTopBar
+import dev.smithy.design.rememberSmithyHaptics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.net.Uri
 import java.io.File
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 
 /**
  * 「工作台」Tab。
  *
- * 选包 → 概览 / 代码 / 改动 三个标签 → 底部一条动作链：重打包 → 签名 → 安装。
+ * 选包 → 概览 / 代码 / 资源 / 文件 / 改动 五个标签 → 底部一条动作链：重打包 → 签名 → 安装。
  * M1 的验收路径就是这条链：搜到开屏文案、改掉、打包签名、装回手机。
+ *
+ * 页面的层级照**文件页**那套来分：顶栏（当前是哪个包）→ 标签条（这一页看哪一段，
+ * 底色 `surfaceContainerLow`）→ 内容（不铺底色）→ 动作条（同一层底色）。切标签走淡入
+ * 淡出，和一级导航的切换用同一条曲线、同一档时长。
  */
 @Composable
 fun ApkWorkbenchScreen(
@@ -110,15 +132,7 @@ fun ApkWorkbenchScreen(
         // apk 那几档在没打开包时点了也没内容，所以那种情况下不显示整行，
         // 而是在空状态里给一个「打开模块 zip」的入口
         if (state.phase is Phase.Ready || state.tab == WorkbenchTab.MODULE) {
-            ScrollableTabRow(selectedTabIndex = state.tab.ordinal, edgePadding = 0.dp) {
-                WorkbenchTab.entries.forEach { t ->
-                    Tab(
-                        selected = state.tab == t,
-                        onClick = { vm.selectTab(t) },
-                        text = { Text(t.label) },
-                    )
-                }
-            }
+            WorkbenchTabStrip(selected = state.tab, onSelect = vm::selectTab)
         }
 
         Box(Modifier.weight(1f)) {
@@ -126,6 +140,9 @@ fun ApkWorkbenchScreen(
                 ModuleScreen(
                     state = moduleState,
                     onOpen = { modulePicker.launch(arrayOf("*/*")) },
+                    // 从骨架新建：结构约束在 core:fs 的 ModuleScaffold 里（id 合法性、
+                    // 条目在根上、脚本与 system.prop），ViewModel 只管落盘与打开
+                    onCreate = moduleVm::create,
                     onClose = moduleVm::close,
                     onVersion = moduleVm::onVersion,
                     onVersionCode = moduleVm::onVersionCode,
@@ -163,71 +180,153 @@ fun ApkWorkbenchScreen(
     }
 }
 
+/**
+ * 标签条。
+ *
+ * 不再是 M3 的 [androidx.compose.material3.ScrollableTabRow]（下划线指示器 + 等宽分栏）：
+ * 那是「顶部导航」的形状语言，而这一条说的是「同一页里换一段看」。改成**全圆角药丸**，
+ * 和文件页底部标签条、面包屑、工具条是同一套形状；每个标签再给一个图标 —— 六个中文
+ * 标签光靠字读起来慢，图标能先认出来。
+ *
+ * 选中态填色并带过渡动画：切标签是高频动作，硬切会闪。
+ */
+@Composable
+private fun WorkbenchTabStrip(
+    selected: WorkbenchTab,
+    onSelect: (WorkbenchTab) -> Unit,
+) {
+    val haptics = rememberSmithyHaptics()
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                .padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
+            horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            WorkbenchTab.entries.forEach { tab ->
+                val active = tab == selected
+                val container by animateColorAsState(
+                    targetValue = if (active) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    animationSpec = SmithyMotion.state(),
+                    label = "workbenchTabContainer",
+                )
+                val content = if (active) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Surface(
+                    onClick = {
+                        // 已经在这一档上就别再触发一次切换和震动
+                        if (active) return@Surface
+                        haptics.toggle()
+                        onSelect(tab)
+                    },
+                    color = container,
+                    shape = RoundedCornerShape(99.dp),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(tab.icon, contentDescription = null, modifier = Modifier.size(15.dp), tint = content)
+                        Spacer(Modifier.width(6.dp))
+                        Text(tab.label, style = MaterialTheme.typography.labelMedium, color = content, maxLines = 1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 标签 → 图标。六个标签一一对应，不引「图标一览」当索引表。 */
+private val WorkbenchTab.icon: ImageVector
+    get() = when (this) {
+        WorkbenchTab.OVERVIEW -> SmithyIcons.Dashboard
+        WorkbenchTab.CODE -> SmithyIcons.KindCode
+        WorkbenchTab.RESOURCES -> SmithyIcons.Resources
+        WorkbenchTab.FILES -> SmithyIcons.Package
+        WorkbenchTab.PATCHES -> SmithyIcons.Patches
+        WorkbenchTab.MODULE -> SmithyIcons.ModuleTab
+    }
+
+/**
+ * 没打开任何包。
+ *
+ * 不再是「标题 + 两行灰字 + 两个按钮」的裸排版：图标化空态说清**这是什么情况、
+ * 每种包能做什么、下一步点哪里**，两个入口（apk / 模块 zip）留在这里 ——
+ * 没打开包时标签行是不显示的，这里是唯一入口。
+ */
 @Composable
 private fun EmptyState(onPick: () -> Unit, onOpenModule: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("还没有打开任何包", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "apk：看它的构成，改里面的文案或代码，再打包签名装回手机",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
+    SmithyEmptyState(
+        icon = SmithyIcons.KindApk,
+        title = "还没有打开任何包",
+        hint = "apk：看它的构成，改里面的文案或代码，再打包签名装回手机\n" +
             "模块：Magisk / Zygisk 模块 zip 的查看、改动、打包与刷入",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(20.dp))
-        Button(onClick = onPick) { Text("选择 APK") }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onOpenModule) { Text("打开模块 zip") }
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "请只处理你自己有权分析的包",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+        modifier = Modifier.fillMaxSize(),
+        action = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Button(onClick = onPick) {
+                    Icon(SmithyIcons.KindApk, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("选择 APK")
+                }
+                Spacer(Modifier.height(SmithySpacing.gap))
+                OutlinedButton(onClick = onOpenModule) {
+                    Icon(SmithyIcons.KindModule, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("打开模块 zip")
+                }
+                Spacer(Modifier.height(SmithySpacing.section))
+                Text(
+                    "请只处理你自己有权分析的包",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+    )
 }
 
+/**
+ * 正在读包。
+ *
+ * 原先是一个居中转圈 + 一行阶段文字。改成**忙碌行 + 骨架**：骨架提前把「等会儿这里会有
+ * 一屏列表」的布局告诉用户，内容出现时不会整页跳一下（和文件页加载目录时同一个处理）。
+ */
 @Composable
 private fun LoadingState(stage: String) {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        CircularProgressIndicator()
-        Spacer(Modifier.height(16.dp))
-        Text(stage, style = MaterialTheme.typography.bodyMedium)
+    Column(Modifier.fillMaxSize().padding(horizontal = SmithySpacing.gutter)) {
+        Spacer(Modifier.height(SmithySpacing.gutter))
+        BusyRow(stage)
+        Spacer(Modifier.height(SmithySpacing.gutter))
+        SmithySkeletonList()
     }
 }
 
+/**
+ * 打不开这个包。
+ *
+ * 失败也是空态的一种：说清「哪里不对」+「可以怎么办」，并给一个可点的下一步。
+ * 原因与建议都来自 ViewModel（[Phase.Failed]），这里只负责排版。
+ */
 @Composable
 private fun FailedState(state: Phase.Failed, onPick: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text("打不开这个包", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(8.dp))
-        Text(state.message, style = MaterialTheme.typography.bodySmall)
-        state.hint?.let {
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "建议：$it",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-        Spacer(Modifier.height(20.dp))
-        Button(onClick = onPick) { Text("换一个") }
-    }
+    SmithyEmptyState(
+        icon = SmithyIcons.Warning,
+        title = "打不开这个包",
+        hint = buildString {
+            append(state.message)
+            state.hint?.let { append("\n建议：").append(it) }
+        },
+        modifier = Modifier.fillMaxSize(),
+        action = { Button(onClick = onPick) { Text("换一个") } },
+    )
 }
 
 @Composable
@@ -239,82 +338,95 @@ private fun ReadyContent(
     onExportReport: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
-        // ── 顶栏 ──
-        Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    state.meta?.appLabel ?: state.sourceName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+        // ── 顶栏：现在改的是哪个包 ──
+        // 应用名当标题、包名当副标题，标题字号与各个页面统一（SmithyTopBar）；
+        // 「换一个 / 关闭」收成图标按钮 —— 这两个动作每次都在，但都不该占半行文字
+        SmithyTopBar(
+            title = state.meta?.appLabel ?: state.sourceName,
+            subtitle = state.meta?.packageName,
+            actions = {
+                SmithyIconButton(
+                    icon = SmithyIcons.OpenFolder,
+                    contentDescription = "换一个包",
+                    onClick = onPick,
                 )
-                Mono(state.meta?.packageName ?: "", Modifier.padding(top = 2.dp))
-            }
-            TextButton(onClick = onPick) { Text("换一个") }
-            TextButton(onClick = vm::close) { Text("关闭") }
-        }
+                SmithyIconButton(
+                    icon = SmithyIcons.Close,
+                    contentDescription = "关闭这个包",
+                    onClick = { vm.close() },
+                )
+            },
+        )
 
         // 标签行已经在上一级渲染了（它要同时服务于没打开 apk 的模块标签）
 
         Box(Modifier.weight(1f)) {
-            when (state.tab) {
-                WorkbenchTab.OVERVIEW -> state.meta?.let {
-                    OverviewTab(
-                        meta = it,
-                        sourceName = state.sourceName,
-                        entryCount = state.entryCount,
-                        editLabel = state.editLabel,
-                        editVersionName = state.editVersionName,
-                        editVersionCode = state.editVersionCode,
-                        editMinSdk = state.editMinSdk,
-                        editTargetSdk = state.editTargetSdk,
-                        busy = state.busy,
-                        onLabelChange = vm::onEditLabel,
-                        onVersionNameChange = vm::onEditVersionName,
-                        onVersionCodeChange = vm::onEditVersionCode,
-                        onMinSdkChange = vm::onEditMinSdk,
-                        onTargetSdkChange = vm::onEditTargetSdk,
-                        onApplyEdits = vm::applyManifestEdits,
-                        onExportReport = onExportReport,
+            // 换标签淡入淡出：一级导航切换用的是同一档时长（Slow 进 / Fast 出）。
+            // 不做左右滑动 —— 滑动表达「同一层级里的相邻关系」，而这六个标签是同一页里
+            // 换一段看，划过去的手势会让人以为能横着翻页
+            AnimatedContent(
+                targetState = state.tab,
+                transitionSpec = {
+                    fadeIn(tween(SmithyMotion.Standard, easing = SmithyMotion.EaseEnter))
+                        .togetherWith(fadeOut(tween(SmithyMotion.Fast, easing = SmithyMotion.EaseExit)))
+                },
+                label = "workbenchTab",
+            ) { tab ->
+                when (tab) {
+                    WorkbenchTab.OVERVIEW -> state.meta?.let {
+                        OverviewTab(
+                            meta = it,
+                            sourceName = state.sourceName,
+                            entryCount = state.entryCount,
+                            editLabel = state.editLabel,
+                            editVersionName = state.editVersionName,
+                            editVersionCode = state.editVersionCode,
+                            editMinSdk = state.editMinSdk,
+                            editTargetSdk = state.editTargetSdk,
+                            busy = state.busy,
+                            onLabelChange = vm::onEditLabel,
+                            onVersionNameChange = vm::onEditVersionName,
+                            onVersionCodeChange = vm::onEditVersionCode,
+                            onMinSdkChange = vm::onEditMinSdk,
+                            onTargetSdkChange = vm::onEditTargetSdk,
+                            onApplyEdits = vm::applyManifestEdits,
+                            onExportReport = onExportReport,
+                        )
+                    }
+
+                    WorkbenchTab.CODE -> CodeTab(
+                        state = state,
+                        onQuery = vm::setQuery,
+                        onScope = vm::setScope,
+                        onSearch = vm::search,
+                        onOpenClass = vm::openClass,
+                        onCodeView = vm::showCodeView,
+                        onReplace = vm::replaceString,
                     )
+
+                    WorkbenchTab.RESOURCES -> ResourcesTab(
+                        state = state,
+                        onType = vm::setResType,
+                        onFilter = vm::setResFilter,
+                        onLoad = vm::loadResources,
+                        onSetResource = vm::setResource,
+                        onReplaceMany = vm::replaceMany,
+                        onPickIcon = onPickIcon,
+                    )
+
+                    WorkbenchTab.FILES -> FilesTab(
+                        state = state,
+                        onFilter = vm::setEntryFilter,
+                        onLoad = vm::loadEntries,
+                        onReplace = vm::replaceEntry,
+                        onDelete = vm::deleteEntry,
+                    )
+
+                    WorkbenchTab.PATCHES -> PatchesTab(state = state, onRevert = vm::revert)
+                    // 模块标签在上一级就分流出去了（它不依赖已打开的 apk）。
+                    // 这里列出来只是为了让 when 穷尽 —— 编译器不认「上面已经拦过」
+                    WorkbenchTab.MODULE -> Unit
                 }
-
-                WorkbenchTab.CODE -> CodeTab(
-                    state = state,
-                    onQuery = vm::setQuery,
-                    onScope = vm::setScope,
-                    onSearch = vm::search,
-                    onOpenClass = vm::openClass,
-                    onCodeView = vm::showCodeView,
-                    onReplace = vm::replaceString,
-                )
-
-                WorkbenchTab.RESOURCES -> ResourcesTab(
-                    state = state,
-                    onType = vm::setResType,
-                    onFilter = vm::setResFilter,
-                    onLoad = vm::loadResources,
-                    onSetResource = vm::setResource,
-                    onReplaceMany = vm::replaceMany,
-                    onPickIcon = onPickIcon,
-                )
-
-                WorkbenchTab.FILES -> FilesTab(
-                    state = state,
-                    onFilter = vm::setEntryFilter,
-                    onLoad = vm::loadEntries,
-                    onReplace = vm::replaceEntry,
-                    onDelete = vm::deleteEntry,
-                )
-
-                WorkbenchTab.PATCHES -> PatchesTab(state = state, onRevert = vm::revert)
-                // 模块标签在上一级就分流出去了（它不依赖已打开的 apk）。
-                // 这里列出来只是为了让 when 穷尽 —— 编译器不认「上面已经拦过」
-                WorkbenchTab.MODULE -> Unit
             }
         }
 
@@ -325,47 +437,63 @@ private fun ReadyContent(
 /** 打包链路的动作条。三步的顺序不能颠倒：签名签的是上一次打包的产物。 */
 @Composable
 private fun ActionBar(state: WorkbenchUiState, vm: ApkWorkbenchViewModel) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
-        if (state.busy != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.width(14.dp).height(14.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(state.busy, style = MaterialTheme.typography.bodySmall)
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
+        ) {
+            if (state.busy != null) {
+                BusyRow(state.busy)
+                Spacer(Modifier.height(SmithySpacing.gap))
             }
-            Spacer(Modifier.height(8.dp))
-        }
-        state.message?.let { msg ->
-            Text(
-                msg,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (state.isError) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
-            )
-            Spacer(Modifier.height(8.dp))
-        }
+            // 消息条（成功 / 失败）整条进出都带动画：它常常在操作后立刻冒出来，
+            // 硬切会让人以为是自己刚才误触了哪里
+            AnimatedVisibility(
+                visible = state.message != null,
+                enter = expandVertically(SmithyMotion.enter()) + fadeIn(SmithyMotion.enter()),
+                exit = shrinkVertically(SmithyMotion.exit()) + fadeOut(SmithyMotion.exit()),
+            ) {
+                state.message?.let { msg ->
+                    Column {
+                        MessageBar(msg, state.isError)
+                        Spacer(Modifier.height(SmithySpacing.gap))
+                    }
+                }
+            }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val idle = state.busy == null
-            OutlinedButton(
-                onClick = vm::rebuild,
-                enabled = idle && state.patches.isNotEmpty(),
-                modifier = Modifier.weight(1f),
-            ) { Text("重打包") }
+            Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
+                val idle = state.busy == null
+                // 按钮上带图标：这三步是一条链，图标让「现在走到哪一步」不必读字
+                OutlinedButton(
+                    onClick = vm::rebuild,
+                    enabled = idle && state.patches.isNotEmpty(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(SmithyIcons.Package, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("重打包")
+                }
 
-            OutlinedButton(
-                onClick = vm::sign,
-                enabled = idle && state.rebuiltPath != null,
-                modifier = Modifier.weight(1f),
-            ) { Text("签名") }
+                OutlinedButton(
+                    onClick = vm::sign,
+                    enabled = idle && state.rebuiltPath != null,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(SmithyIcons.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("签名")
+                }
 
-            Button(
-                onClick = vm::install,
-                enabled = idle && (state.signedPath != null || state.rebuiltPath != null),
-                modifier = Modifier.weight(1f),
-            ) { Text("安装") }
+                Button(
+                    onClick = vm::install,
+                    enabled = idle && (state.signedPath != null || state.rebuiltPath != null),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(SmithyIcons.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("安装")
+                }
+            }
         }
     }
 }

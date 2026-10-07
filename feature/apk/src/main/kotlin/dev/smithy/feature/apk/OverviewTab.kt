@@ -2,18 +2,22 @@ package dev.smithy.feature.apk
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -22,11 +26,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import dev.smithy.design.SmithyIcons
 import dev.smithy.design.SmithyMono
+import dev.smithy.design.SmithyNumeric
+import dev.smithy.design.SmithyRowMeta
+import dev.smithy.design.SmithyRowTitle
 import dev.smithy.design.SmithySpacing
 import dev.smithy.engine.ApkMeta
 import dev.smithy.engine.ComponentInfo
@@ -38,6 +44,13 @@ import dev.smithy.engine.DexStat
  * 排版按 B 稿：**统计数字一条走完**（版本号 / SDK / DEX 类数 / 条目数不各自成卡，
  * 一行四格）、**体积构成一条分布条**（比逐项列表快得多地回答「这包里什么最大」）、
  * **权限按组**（14 项权限逐条列 14 行，不如「存储×2、网络×2…」一眼看全）。
+ *
+ * 这一轮把所有内容装进 [Section]（小标题 + 底色卡）：原先每块内容各是一张 M3 Card、
+ * 卡内用 labelLarge 的主色标题分隔，卡片之间还夹着 4dp 的零散 Spacer —— 分组看不出来，
+ * 间距也不在网格上。现在分组靠**底色 + 间距**（同文件页），纵向节奏统一由
+ * [SmithySpacing.section] 给。
+ *
+ * 应用名与包名**不在这里重复**：它们已经是顶栏的标题与副标题。
  */
 @Composable
 fun OverviewTab(
@@ -60,46 +73,50 @@ fun OverviewTab(
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(SmithySpacing.gutter),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(vertical = SmithySpacing.section),
+        verticalArrangement = Arrangement.spacedBy(SmithySpacing.section),
     ) {
-        HeaderCard(sourceName, entryCount, meta)
+        Section("概况") { HeaderCard(sourceName, entryCount, meta) }
         // 改名与改版本放在最前：这是改包最高频的两件事
-        EditCard(
-            label = editLabel,
-            versionName = editVersionName,
-            versionCode = editVersionCode,
-            busy = busy,
-            onLabel = onLabelChange,
-            onVersionName = onVersionNameChange,
-            onVersionCode = onVersionCodeChange,
-            onApply = onApplyEdits,
-        )
-        SdkCard(editMinSdk, editTargetSdk, onMinSdkChange, onTargetSdkChange)
-        SignatureCard(meta)
-        DexCard(meta.dexStats)
-        PermissionsCard(meta.permissions)
-        ComponentsCard(meta.components)
-        Spacer(Modifier.height(4.dp))
-        OutlinedButton(onClick = onExportReport, modifier = Modifier.fillMaxWidth()) {
+        Section("改名 / 改版本") {
+            EditCard(
+                label = editLabel,
+                versionName = editVersionName,
+                versionCode = editVersionCode,
+                busy = busy,
+                onLabel = onLabelChange,
+                onVersionName = onVersionNameChange,
+                onVersionCode = onVersionCodeChange,
+                onApply = onApplyEdits,
+            )
+        }
+        Section("支持的系统版本") {
+            SdkCard(editMinSdk, editTargetSdk, onMinSdkChange, onTargetSdkChange)
+        }
+        Section("签名") { SignatureCard(meta) }
+        Section("DEX 构成（${meta.dexStats.size} 个）") { DexCard(meta.dexStats) }
+        Section("权限 · ${meta.permissions.size} 项（按组）") { PermissionsCard(meta.permissions) }
+        Section("组件（${meta.components.size} 个）") { ComponentsCard(meta.components) }
+
+        // 导出报告：这一步是「把分析带走」，所以用图标把方向说清（往下/往外）
+        OutlinedButton(
+            onClick = onExportReport,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter),
+        ) {
+            Icon(SmithyIcons.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
             Text("导出报告（Markdown）")
         }
-        Spacer(Modifier.height(16.dp))
     }
 }
 
 @Composable
 private fun HeaderCard(sourceName: String, entryCount: Int, m: ApkMeta) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(m.appLabel, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Mono(m.packageName)
-
-        // 统计条：四个数字一格一份，中间细分隔。这些是「扫一眼」的信息，
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
+        // 统计条：四个数字一格一份。这些是「扫一眼」的信息，
         // 逐个成卡会把最上面的两屏全占掉（B 稿的核心改动）
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(0.dp),
-        ) {
+        Row(Modifier.fillMaxWidth()) {
             StatCell("${m.versionCode}", "版本号", Modifier.weight(1f))
             StatCell("${m.minSdk}/${m.targetSdk}", "MIN/TGT", Modifier.weight(1f))
             StatCell(
@@ -110,13 +127,15 @@ private fun HeaderCard(sourceName: String, entryCount: Int, m: ApkMeta) {
             StatCell("$entryCount", "条目", Modifier.weight(1f))
         }
 
-        KV("大小", "%.1f MB".format(m.sizeBytes / 1024.0 / 1024.0))
-        KV("文件", sourceName)
-        if (m.isSplit) KV("形态", "split APK")
-
         // 体积构成：一条按占比分段的横条 + 图例。回答的是「这包为什么这么大」，
         // 比任何数字列表都快 —— 眼睛对长度比对数字敏感
         SizeDistBar(m)
+
+        Column(Modifier.fillMaxWidth()) {
+            InfoRow("大小", "%.1f MB".format(m.sizeBytes / 1024.0 / 1024.0))
+            InfoRow("文件", sourceName)
+            if (m.isSplit) InfoRow("形态", "split APK")
+        }
     }
 }
 
@@ -124,12 +143,7 @@ private fun HeaderCard(sourceName: String, entryCount: Int, m: ApkMeta) {
 @Composable
 private fun StatCell(value: String, label: String, modifier: Modifier = Modifier) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            value,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace,
-        )
+        Text(value, style = MaterialTheme.typography.titleMedium, fontFamily = SmithyMono)
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
@@ -156,8 +170,8 @@ private fun SizeDistBar(m: ApkMeta) {
     val otherF = rest - resF
 
     Column(Modifier.fillMaxWidth()) {
-        // 分段条：底条（surfaceContainerHighest）铺满，上面按占比叠三色段。
-        // 用 weight 分配宽度而不是算像素 —— 占比是相对的，weight 天然做这件事
+        // 分段条：按占比叠三色段。用 weight 分配宽度而不是算像素 ——
+        // 占比是相对的，weight 天然做这件事
         Row(Modifier.fillMaxWidth().height(10.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
             Surface(
                 color = MaterialTheme.colorScheme.primary,
@@ -174,8 +188,8 @@ private fun SizeDistBar(m: ApkMeta) {
                 shape = RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp),
             ) {}
         }
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Spacer(Modifier.height(SmithySpacing.gap))
+        Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
             Legend("DEX ${(dexF * 100).toInt()}%", MaterialTheme.colorScheme.primary)
             Legend("资源 ${(resF * 100).toInt()}%", MaterialTheme.colorScheme.tertiary)
             Legend("其他 ${(otherF * 100).toInt()}%", MaterialTheme.colorScheme.secondary)
@@ -186,7 +200,7 @@ private fun SizeDistBar(m: ApkMeta) {
 @Composable
 private fun Legend(text: String, color: androidx.compose.ui.graphics.Color) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Surface(color = color, modifier = Modifier.width(8.dp).height(8.dp)) {}
+        Surface(color = color, modifier = Modifier.width(8.dp).height(8.dp), shape = RoundedCornerShape(2.dp)) {}
         Spacer(Modifier.width(4.dp))
         Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -209,24 +223,22 @@ private fun EditCard(
     onVersionCode: (String) -> Unit,
     onApply: () -> Unit,
 ) {
-    SectionCard("改名 / 改版本") {
+    Column(Modifier.fillMaxWidth()) {
         EditRow("应用名", label, onLabel)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(SmithySpacing.gap))
         EditRow("版本名", versionName, onVersionName)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(SmithySpacing.gap))
         EditRow("版本码", versionCode, onVersionCode, numeric = true)
-        Spacer(Modifier.height(12.dp))
-        Button(
-            onClick = onApply,
-            enabled = busy == null,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
+        Spacer(Modifier.height(SmithySpacing.gutter))
+        Button(onClick = onApply, enabled = busy == null, modifier = Modifier.fillMaxWidth()) {
+            Icon(SmithyIcons.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
             Text(busy ?: "应用改动")
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(SmithySpacing.gap))
         Text(
             "改完要重新打包 + 签名才生效。应用名会一并改掉启动器上显示的名字",
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -241,12 +253,17 @@ private fun EditRow(
     numeric: Boolean = false,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(64.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(56.dp),
+        )
         OutlinedTextField(
             value = value,
             onValueChange = onChange,
             singleLine = true,
-            textStyle = MaterialTheme.typography.bodyMedium,
+            textStyle = SmithyRowTitle,
             keyboardOptions = if (numeric) {
                 KeyboardOptions(keyboardType = KeyboardType.Number)
             } else {
@@ -270,15 +287,15 @@ private fun SdkCard(
     onMinSdk: (String) -> Unit,
     onTargetSdk: (String) -> Unit,
 ) {
-    SectionCard("支持的系统版本") {
+    Column(Modifier.fillMaxWidth()) {
         EditRow("minSdk", minSdk, onMinSdk, numeric = true)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(SmithySpacing.gap))
         EditRow("targetSdk", targetSdk, onTargetSdk, numeric = true)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(SmithySpacing.gap))
         Text(
             "提高 minSdk 等于放弃更早的 Android 版本。提到 24 以上就不再需要 v1 签名，装包更快；" +
                 "不过 v1 我们也能自己签（见 打包 标签的签名信息），所以这不是必须的 —— 纯看你想支持到哪一代。",
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -286,66 +303,79 @@ private fun SdkCard(
 
 @Composable
 private fun SignatureCard(m: ApkMeta) {
-    SectionCard("签名") {
-        if (m.signatures.isEmpty()) {
-            Text(
-                "未检测到有效签名（可能是无签名包，或用了非常规签名方案）",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            return@SectionCard
-        }
+    if (m.signatures.isEmpty()) {
+        Text(
+            "未检测到有效签名（可能是无签名包，或用了非常规签名方案）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
         m.signatures.forEach { s ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "v${s.scheme}",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (s.isDebug) "Debug 签名" else "正式签名",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+            Column(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Tag("v${s.scheme}", icon = SmithyIcons.Key)
+                    Spacer(Modifier.width(SmithySpacing.gap))
+                    Text(
+                        if (s.isDebug) "Debug 签名" else "正式签名",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                InfoRow("主体", s.subject)
+                if (s.issuer != s.subject) InfoRow("颁发者", s.issuer)
+                InfoRow("SHA-256", s.sha256)
+                InfoRow("SHA-1", s.sha1)
             }
-            Spacer(Modifier.height(6.dp))
-            KV("主体", s.subject)
-            if (s.issuer != s.subject) KV("颁发者", s.issuer)
-            KV("SHA-256", s.sha256)
-            KV("SHA-1", s.sha1)
         }
     }
 }
 
 @Composable
 private fun DexCard(stats: List<DexStat>) {
-    SectionCard("DEX 构成（${stats.size} 个）") {
-        if (stats.isEmpty()) {
-            Text("没有 dex —— 这不是正常的安装包", style = MaterialTheme.typography.bodySmall)
-            return@SectionCard
-        }
+    if (stats.isEmpty()) {
+        Text(
+            "没有 dex —— 这不是正常的安装包",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        return
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
         stats.forEach { d ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(d.name, style = MaterialTheme.typography.bodyMedium, fontFamily = SmithyMono)
+            Column(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = SmithyIcons.KindCode,
+                        contentDescription = null,
+                        modifier = Modifier.size(SmithySpacing.iconSize),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(SmithySpacing.iconGap))
                     Text(
-                        "${d.classes} 类 · ${d.methods} 方法",
-                        style = MaterialTheme.typography.labelSmall,
+                        d.name,
+                        style = SmithyRowTitle.copy(fontFamily = SmithyMono),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                    )
+                    // 大小单独一列、右对齐、等宽 + 表格数字 —— 参差的数字扫一眼比不出大小
+                    Text(
+                        "%.1f MB".format(d.sizeBytes / 1024.0 / 1024.0),
+                        style = SmithyNumeric,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Text(
-                    "%.1f MB".format(d.sizeBytes / 1024.0 / 1024.0),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = SmithyMono,
+                    "${d.classes} 类 · ${d.methods} 方法",
+                    style = SmithyRowMeta,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = SmithySpacing.iconSize + SmithySpacing.iconGap),
                 )
-            }
-            if (d.methods > 65536) {
-                Text(
-                    "方法数超 64K —— 这是个巨型包，改它要耐心",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                if (d.methods > 65536) {
+                    WarningNote("方法数超 64K —— 这是个巨型包，改它要耐心")
+                }
             }
         }
     }
@@ -356,48 +386,40 @@ private fun DexCard(stats: List<DexStat>) {
  *
  * 「android.permission.INTERNET」这种全名逐条列 14 行，不如「网络 ×2、存储 ×2」
  * 一眼看全。危险权限组标红 —— 那才是看权限列表真正想找的东西。
+ *
+ * 用 [FlowRow] 而不是 Row：组数多起来时，Row 会把这些标签**压出屏幕**（超出的部分
+ * 直接被裁掉，还看不出少了什么）。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PermissionsCard(permissions: List<String>) {
-    SectionCard("权限 · ${permissions.size} 项（按组）") {
-        if (permissions.isEmpty()) {
-            Text("没申请任何权限", style = MaterialTheme.typography.bodySmall)
-            return@SectionCard
-        }
-        val groups = permissions.groupBy { permGroupOf(it) }
-        val dangerous = listOf(
-            "存储", "相机", "麦克风", "位置", "联系人", "电话", "短信", "日历",
-            "身体传感器", "身体状况", "附近设备",
+    if (permissions.isEmpty()) {
+        Text(
+            "没申请任何权限",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            groups.entries.sortedByDescending { it.value.size }.forEach { (group, perms) ->
-                val isRisk = group in dangerous
-                Surface(
-                    color = if (isRisk) {
-                        MaterialTheme.colorScheme.errorContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainer
-                    },
-                    shape = RoundedCornerShape(99.dp),
-                ) {
-                    Text(
-                        if (perms.size > 1) "$group ×${perms.size}" else group,
-                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isRisk) {
-                            MaterialTheme.colorScheme.onErrorContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
-            }
+        return
+    }
+    val groups = permissions.groupBy { permGroupOf(it) }
+    FlowRow(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
+        verticalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
+    ) {
+        groups.entries.sortedByDescending { it.value.size }.forEach { (group, perms) ->
+            Tag(
+                text = if (perms.size > 1) "$group ×${perms.size}" else group,
+                danger = group in DANGEROUS_PERM_GROUPS,
+            )
         }
     }
 }
+
+private val DANGEROUS_PERM_GROUPS = listOf(
+    "存储", "相机", "麦克风", "位置", "联系人", "电话", "短信", "日历",
+    "身体传感器", "身体状况", "附近设备",
+)
 
 /** 权限全名 → 人话组名。不认识的归「其他」。 */
 private fun permGroupOf(perm: String): String {
@@ -431,14 +453,18 @@ private fun permGroupOf(perm: String): String {
 
 @Composable
 private fun ComponentsCard(components: List<ComponentInfo>) {
-    SectionCard("组件（${components.size} 个）") {
-        if (components.isEmpty()) {
-            Text("清单里没有组件（不是正常的安装包）", style = MaterialTheme.typography.bodySmall)
-            return@SectionCard
-        }
+    if (components.isEmpty()) {
+        Text(
+            "清单里没有组件（不是正常的安装包）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
         // 导出的组件才是风险点，按「导出在前」排
         components.sortedByDescending { it.exported }.take(40).forEach { c ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     when (c.kind) {
                         ComponentInfo.Kind.ACTIVITY -> "A"
@@ -453,18 +479,13 @@ private fun ComponentsCard(components: List<ComponentInfo>) {
                 )
                 Text(
                     c.name.substringAfterLast('.'),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = SmithyMono,
+                    style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+                    color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                 )
                 if (c.exported) {
-                    Text(
-                        "导出",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Tag("导出", danger = true)
                 }
             }
         }
