@@ -107,6 +107,11 @@ def main() -> None:
     for sha in todo:
         subject = git("log", "-1", "--format=%s", sha).strip()
         body_msg = git("log", "-1", "--format=%B", sha)
+        # GitHub 会在收到 message 后**自己补一个换行**（实测：给的 `%B` 已带换行，存下来是
+        # 两个 —— 提交对象字节不同，哈希也就不同）。要让远端与我本地逐字节一致，就先去掉
+        # 尾部那一个换行，让它补回来。
+        if body_msg.endswith("\n"):
+            body_msg = body_msg[:-1]
         # 这个提交相对它父提交的变更（含删除）
         stats = git("diff", "--name-status", f"{sha}^", sha).splitlines()
         entries = []
@@ -144,6 +149,8 @@ def main() -> None:
         commit = call("POST", f"{API}/repos/{repo}/git/commits", tok,
                       {"message": body_msg, "tree": tree["sha"], "parents": [parent],
                        "author": who[0], "committer": who[1]})
+        if commit["sha"] != sha:
+            sys.exit(f"⚠ 远端生成的提交 {commit['sha'][:8]} 与本地 {sha[:8]} 逐字节不同 —— 停下，不移动分支")
         parent = commit["sha"]
         local_tree = git("rev-parse", f"{sha}^{{tree}}").strip()
         if tree["sha"] != local_tree:
