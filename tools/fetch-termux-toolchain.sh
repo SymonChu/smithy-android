@@ -259,8 +259,57 @@ echo "   sysroot 里的 jni 头：$( ls "$ROOT/sysroot/usr/include/jni.h" "$ROOT
   echo "mirror=$IDX_URL"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "# package	version	sha256	installed_kb"
-  awk -F'\t' '{print $1"\t"$2"\t"$4"\t"$5}' "$WORK/meta.tsv"
+  awk -F'	' '{print $1"	"$2"	"$4"	"$5}' "$WORK/meta.tsv"
 } > "$ROOT/MANIFEST.txt"
+
+# 再分发要带的说明。这个包一旦对外发布（GitHub Release 之类）就是**再分发**，
+# 义务是：附许可、说明来源、指出对应源码在哪。各包自带的 copyright 文件已经在
+# share/doc/<包名>/copyright 里（解包时就带上了），这里再给一份人话版总表。
+cat > "$ROOT/NOTICE.md" <<'NOTICE'
+# Smithy Termux 工具链包 · 许可与来源
+
+本包由 `smithy/tools/fetch-termux-toolchain.sh` 从 **Termux 主仓库**的二进制包组装而成，
+内容**未经修改**（只做了两件事：去掉首部目录层级、按 ABI 删除用不到的其他 ABI 目录）。
+
+## 来源
+
+- 打包仓库：Termux 主仓库（`dists/stable/main/binary-<arch>`），
+  镜像按 tuna → ustc → bfsu → 官方 依次尝试；实际用的镜像见 `MANIFEST.txt`。
+- 每个包的版本与 SHA-256（来自仓库索引）见 `MANIFEST.txt`。
+- 上游源码：各项目的官方仓库 / 发布页。Termux 的构建脚本在
+  https://github.com/termux/termux-packages （`packages/<包名>/build.sh` 里写着上游地址与版本）。
+- 各包自带的版权与许可全文：`share/doc/<包名>/copyright`。
+
+## 主要组件与许可（按上游项目）
+
+| 组件 | 包 | 许可 |
+|---|---|---|
+| clang / llvm / lld / libLLVM / compiler-rt | clang, llvm, lld, libllvm, libcompiler-rt | Apache-2.0 with LLVM exception |
+| libc++ | libc++ | MIT / UIUC（LLVM 项目） |
+| bionic 头与桩库 | ndk-sysroot, ndk-multilib-native-stubs | 来自 Android NDK（Apache-2.0 为主，见包内 NOTICE） |
+| zlib | zlib | Zlib |
+| zstd | zstd | BSD-3-Clause 或 GPL-2.0（双许可，此处按 BSD-3-Clause 使用） |
+| libiconv | libiconv | **LGPL-2.1** |
+| ncurses | ncurses | MIT 类（X11 许可） |
+| libxml2 | libxml2 | MIT |
+| libffi | libffi | MIT |
+| liblzma (xz) | liblzma | 公有领域（0BSD 类） |
+
+**本包不含 GPL-3.0 组件**：`make` 因此被刻意排除（这条路不需要它）。
+
+## 关于 LGPL 组件（libiconv）
+
+libiconv 以**未修改的动态库**形式随包分发（`lib/libiconv.so.*`），与其它组件是独立的文件，
+使用者可以用自己的版本替换它（LGPL-2.1 §6 的再链接要求）。
+其源码获取方式见 Termux 的构建脚本所列上游地址。
+
+## 这个包不包含什么
+
+- 不含 Android SDK / NDK 的宿主机工具链（那些是 x86_64 的，手机上跑不了）；
+- 不含 `make`、`cmake` 等构建系统（Smithy 直接调用 clang++）；
+- 不含其他 ABI 的桩库（只保留目标 ABI 一份）。
+NOTICE
+echo "   已写入 NOTICE.md（来源 + 许可 + 不包含什么）"
 
 echo "== 6/6 打包（用 tar.gz，不用 zip）"
 # 为什么是 tar.gz 而不是 zip：**zip 装不下软链接**。Termux 的 bin/clang++ 是指向
