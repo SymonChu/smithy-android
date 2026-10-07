@@ -31,6 +31,12 @@ dependencies {
     api(libs.androidx.compose.ui)
     api(libs.androidx.compose.material3)
 
+    // 文件类型 → 图标/颜色的映射（FileKindVisual）放在这里，因为**两个 feature 都要用**：
+    // 放进 feature/files 会让 feature/apk 要么反向依赖它、要么自己抄一份 ——
+    // 而抄一份的必然结果是同一个类型在两个页面上是两张图、两种颜色。
+    // core:fs 是纯数据模块（无 Android 依赖），design 依赖它不会成环。
+    api(project(":core:fs"))
+
     // 只有图标集的**结构**测试（SmithyIconsTest）：图标是脚本生成的，编译通过
     // 说明不了画出来是不是空的（平移层丢了就是不报错的空白图标）。
     // ImageVector / PathParser 都是纯 Kotlin，不需要 Robolectric。

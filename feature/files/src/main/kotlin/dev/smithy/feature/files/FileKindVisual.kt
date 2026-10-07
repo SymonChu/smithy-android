@@ -1,56 +1,14 @@
 package dev.smithy.feature.files
 
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import dev.smithy.design.SmithyIcons
-import dev.smithy.fs.FileKind
 
 /**
- * 文件类型 → 图标。
+ * 文件页**独有**的表现层映射。
  *
- * **为什么放在 feature 层**：类型分类（[FileKind]）是纯数据，`core:fs` 是纯 JVM 模块、
- * 不依赖 Compose；而「长什么样」是表现层的事。原先 `FileKind` 上挂着 `emoji` 字段 ——
- * 表现层的东西长在了数据模块里，这正是它后来变成 16 个 emoji 的原因（emoji 是当时
- * 唯一不用引依赖就能拿到的东西）。
- *
- * 现在换成 [SmithyIcons] 的单色矢量：跨 ROM 字形一致、能按主题着色、在等宽数字列里
- * 基线也对得齐。
+ * 文件类型 → 图标/颜色那一套在 `core:design` 的 `FileKindVisual`（文件页和工作台
+ * 共用同一套，不能各抄一份）。这里只放这一页特有的东西。
  */
-val FileKind.icon: ImageVector
-    get() = when (this) {
-        FileKind.DIR -> SmithyIcons.KindDir
-        FileKind.APK -> SmithyIcons.KindApk
-        FileKind.ARCHIVE -> SmithyIcons.KindArchive
-        FileKind.IMAGE_DISK -> SmithyIcons.KindDisk
-        FileKind.PDF -> SmithyIcons.KindPdf
-        FileKind.DOC -> SmithyIcons.KindDoc
-        FileKind.BOOK -> SmithyIcons.KindBook
-        FileKind.PICTURE -> SmithyIcons.KindPicture
-        FileKind.AUDIO -> SmithyIcons.KindAudio
-        FileKind.VIDEO -> SmithyIcons.KindVideo
-        FileKind.FONT -> SmithyIcons.KindFont
-        FileKind.CODE -> SmithyIcons.KindCode
-        FileKind.MODULE -> SmithyIcons.KindModule
-        FileKind.BINARY -> SmithyIcons.KindBinary
-        FileKind.DATABASE -> SmithyIcons.KindDatabase
-        FileKind.OTHER -> SmithyIcons.KindOther
-    }
-
-/**
- * 类型 → 图标颜色。
- *
- * **只给两类上色，其余一律次要色**。十六种类型十六种颜色就是又回到 emoji 的老路
- * （花的、互相抢注意力）；分类靠**形状**就够了。留下的两个重音是这台工具真正在做的
- * 两件事：目录（往哪儿去）和安装包（要改的东西）。
- */
-@Composable
-fun FileKind.tint(): Color = when (this) {
-    FileKind.DIR -> MaterialTheme.colorScheme.primary
-    FileKind.APK -> MaterialTheme.colorScheme.tertiary
-    else -> MaterialTheme.colorScheme.onSurfaceVariant
-}
 
 /**
  * 快捷入口的图标。

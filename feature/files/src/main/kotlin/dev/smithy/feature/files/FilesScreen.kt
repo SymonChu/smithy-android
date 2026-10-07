@@ -53,6 +53,9 @@ import dev.smithy.design.SmithyRowTitle
 import dev.smithy.design.SmithySectionTitle
 import dev.smithy.design.SmithySkeletonList
 import dev.smithy.design.SmithyTopBar
+// 文件类型 → 图标/颜色：和 feature/apk 共用同一套（在 core:design 里）
+import dev.smithy.design.icon
+import dev.smithy.design.tint
 import dev.smithy.design.rememberSmithyHaptics
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon

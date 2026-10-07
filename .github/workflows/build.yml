@@ -49,6 +49,11 @@ jobs:
           SMITHY_TEST_APK="$PWD/app/build/outputs/apk/debug/app-debug.apk" \
             ./gradlew :core:engine:testDebugUnitTest --stacktrace
 
+      # 图标集是脚本生成的，编译通过说明不了画出来是不是空的（少一层平移就是
+      # 一片空白、还不报错），所以这一条必须跑
+      - name: 设计系统测试（图标集结构）
+        run: ./gradlew :core:design:testDebugUnitTest --stacktrace
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
