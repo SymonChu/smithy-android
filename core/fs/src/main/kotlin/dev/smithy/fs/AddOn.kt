@@ -34,6 +34,14 @@ import java.util.zip.ZipFile
 /** 组件种类 —— 决定它装在哪个目录下（`filesDir/<dirName>` 或 `/data/local/tmp/smithy/<dirName>`）。 */
 enum class AddOnKind(val dirName: String) {
     ROOTFS("rootfs"),
+
+    /**
+     * 目标 ABI 的 sysroot（bionic 头 + 桩库），交叉编 arm64 要它。
+     *
+     * **单独一个目录**，不跟 [TOOLCHAIN] 共用：装一份会先清掉目标目录，
+     * 两条共用一个目录就会互相覆盖（先下 sysroot 再灌 bundle，sysroot 就没了）。
+     */
+    SYSROOT("sysroot"),
     TOOLCHAIN("native-toolchain"),
     OTHER("addon"),
 }
@@ -119,7 +127,34 @@ object AddOnCatalog {
         needsRoot = true,
     )
 
-    val all: List<AddOnSpec> = listOf(rootfsAlpine)
+    /**
+     * NDK 里的 sysroot，**只要 arm64 那一片**。
+     *
+     * 交叉编 arm64 的 so 必须有 bionic 的头（`jni.h`、`android/log.h`）与桩库（`liblog.so`、
+     * libc++），这些只在 NDK 里。整个 NDK 是 656MB 而其中要用到的约 54MB —— 靠解包时的
+     * `onlyPaths` 只留 `sysroot/usr/include` 与 `sysroot/usr/lib/aarch64-linux-android`，
+     * 宿主机那份 x86_64 clang 一个字节都不落盘。
+     *
+     * 下载体积是实测的（668,556,491 字节），sha256 也是实际算的。
+     */
+    val sysrootNdkArm64 = AddOnSpec(
+        id = "sysroot-ndk-arm64",
+        name = "Android sysroot（arm64-v8a）",
+        summary = "从官方 NDK 里只取 arm64 的 bionic 头与桩库（约 54MB），交叉编 so 的必要条件。" +
+            "下载 656MB 但只留 sysroot 那一片，宿主机 clang 不留",
+        kind = AddOnKind.SYSROOT,
+        url = "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip",
+        bytes = 668_556_491,
+        sha256 = "eefeafe7ccf177de7cc57158da585e7af119bb7504a63604ad719e4b2a328b54",
+        archive = AddOnArchive.ZIP,
+        license = "Android NDK（Apache-2.0 为主，另有 BSD/MIT 组件，见 NDK 内的 NOTICE）",
+        homepage = "https://developer.android.com/ndk",
+        // android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64 这五层去掉
+        stripComponents = 5,
+        onlyPaths = listOf("sysroot/usr/include", "sysroot/usr/lib/aarch64-linux-android"),
+    )
+
+    val all: List<AddOnSpec> = listOf(rootfsAlpine, sysrootNdkArm64)
 
     fun find(id: String): AddOnSpec? = all.firstOrNull { it.id == id.trim() }
 }

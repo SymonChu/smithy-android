@@ -254,6 +254,20 @@ object NativeToolchains {
     }
 
     /**
+     * chroot 那条路用的 target sysroot 在哪儿。
+     *
+     * 两个来源：单独下的那一片（`addon/sysroot`，只含 arm64 的 bionic 头与桩库），
+     * 或 bundle 自带的（`addon/native-toolchain/sysroot`）。前者优先。
+     */
+    fun chrootSysroot(filesDir: File): File? {
+        val addon = File(filesDir, "addon")
+        return listOf(
+            File(addon, AddOnKind.SYSROOT.dirName),
+            File(addon, "${AddOnKind.TOOLCHAIN.dirName}/sysroot"),
+        ).firstOrNull { it.isDirectory }
+    }
+
+    /**
      * 在一个目录里找工具链。
      *
      * 认两种布局：

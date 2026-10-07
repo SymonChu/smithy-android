@@ -520,6 +520,8 @@ private fun NativeCard(
     val addons = AddOnHost.current()
     val rootfs = AddOnCatalog.rootfsAlpine
     val rootfsInstalled = addons?.installed(rootfs) != null
+    val sysrootAddon = AddOnCatalog.sysrootNdkArm64
+    val sysrootInstalled = addons?.installed(sysrootAddon) != null
 
     Section("编译（native）") {
         Text(
@@ -559,6 +561,18 @@ private fun NativeCard(
                 style = SmithyRowMeta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // chroot 那条路还缺 target sysroot 的话，编译一定失败在缺 jni.h —— 先说清
+            if (toolchain.name.contains("rootfs") && !sysrootInstalled) {
+                Spacer(Modifier.height(SmithySpacing.gap))
+                Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
+                    Pill(
+                        "下载 Android sysroot（arm64-v8a，下载 ${humanSize(sysrootAddon.bytes)}，" +
+                            "只留约 54MB）",
+                        { onInstallComponent(sysrootAddon.id) },
+                        icon = SmithyIcons.Download,
+                    )
+                }
+            }
         } else {
             // 和 module.build、以及 NativeToolchains.require() 的异常同一句话
             WarningNote(NativeToolchains.missingHint())

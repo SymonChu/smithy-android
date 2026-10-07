@@ -310,6 +310,39 @@ class AddOnTest {
     }
 
     /**
+     * 真从那份 656MB 的 NDK 包里**只取 arm64 的 sysroot**（约 54MB）。
+     *
+     * 门控：`SMITHY_REAL_NDK_ZIP` 指向本地那份 zip。这条同时验两件事：
+     * ① 登记里的 sha256 与真实文件对得上（校验值不是抄来的）；② `strip` + `onlyPaths`
+     * 真的把宿主机 clang 与别的 ABI 挡在外面 —— 手机上装的是 54MB，不是 656MB。
+     */
+    @Test
+    fun `真从 NDK 包里只取 arm64 sysroot`() {
+        val zipPath = System.getenv("SMITHY_REAL_NDK_ZIP")
+        org.junit.Assume.assumeTrue(
+            "没设 SMITHY_REAL_NDK_ZIP，跳过",
+            !zipPath.isNullOrBlank() && File(zipPath!!).isFile,
+        )
+        val spec = AddOnCatalog.sysrootNdkArm64
+        val root = tmpDir()
+
+        val res = AddOnManager(root).installFromLocal(spec, File(zipPath!!))
+
+        assertTrue(res.ok, "该装成功：${res.message} / ${res.hint}")
+        val dir = File(root, spec.kind.dirName)
+        assertTrue(File(dir, "sysroot/usr/include/jni.h").isFile, "要有 jni.h")
+        assertTrue(File(dir, "sysroot/usr/include/android/log.h").isFile, "要有 android/log.h")
+        assertTrue(File(dir, "sysroot/usr/include/c++/v1/string").isFile, "要有 libc++ 头")
+        assertTrue(
+            File(dir, "sysroot/usr/lib/aarch64-linux-android/26/liblog.so").isFile,
+            "要有 arm64 的桩库",
+        )
+        assertFalse(File(dir, "sysroot/usr/lib/x86_64-linux-android").exists(), "别的 ABI 不该落盘")
+        assertFalse(File(dir, "bin/clang").exists(), "宿主机的 clang 一个字节都不该落盘")
+        assertTrue(res.install!!.bytes < 100L * 1024 * 1024, "只留 sysroot 不该有几百 MB：${res.install.bytes}")
+    }
+
+    /**
      * 真去下一趟：Alpine 的 minirootfs（4MB）。
      *
      * 门控用例 —— 每次构建都下一遍 4MB 不合适，但它才是「这套东西真能用」的证据：

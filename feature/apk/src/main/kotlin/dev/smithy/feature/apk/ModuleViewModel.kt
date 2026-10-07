@@ -298,16 +298,19 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
-            val addonRoot = File(getApplication<Application>().filesDir, "addon")
-            val sysroot = File(addonRoot, "native-toolchain/sysroot")
-            val chain = NativeToolchains.scanChroot(shell, mount, sysroot.takeIf { it.isDirectory })
+            val sysroot = NativeToolchains.chrootSysroot(getApplication<Application>().filesDir)
+            val chain = NativeToolchains.scanChroot(shell, mount, sysroot)
             _state.update {
                 it.copy(
                     busy = null,
                     isError = chain == null,
                     message = if (chain != null) {
-                        "编译环境就绪：走 chroot 里的 clang。要编 arm64 的 so 还需要 target sysroot" +
-                            "（native-toolchain/sysroot）"
+                        if (sysroot != null) {
+                            "编译环境就绪：走 chroot 里的 clang + ${sysroot.name} 里的 target sysroot。可以点编译了"
+                        } else {
+                            "clang 就绪，但还缺 target sysroot（编 arm64 要 bionic 的头与桩库）：" +
+                                "编译卡里可以下「Android sysroot（arm64-v8a）」"
+                        }
                     } else {
                         "装完了，但没在 rootfs 里找到 clang —— 把上面那段输出发我"
                     },

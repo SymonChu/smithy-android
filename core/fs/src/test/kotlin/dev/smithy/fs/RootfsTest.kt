@@ -75,6 +75,20 @@ class RootfsTest {
     }
 
     @Test
+    fun `resolv_conf 优先抄设备的 DNS —— 有些网络只认本地 DNS`() {
+        val fs = rootFs()
+        val content = fs.resolvConf()
+        assertTrue(content.contains("nameserver"), content)
+        val device = runCatching {
+            File("/etc/resolv.conf").readLines().map { it.trim() }.filter { it.startsWith("nameserver") }
+        }.getOrDefault(emptyList())
+        if (device.isNotEmpty()) {
+            // 设备/本机有 DNS 配置时必须抄它：写死公共 DNS 在只认本地 DNS 的网络里会解析失败
+            assertEquals(device.joinToString("\n") + "\n", content)
+        }
+    }
+
+    @Test
     fun `deploy 已经部署过就不覆盖 —— 里面可能有装好的 clang`() {
         val shell = RecordingShell()
         rootFs(shell = shell).deploy(File("/tmp/src"))
@@ -127,12 +141,27 @@ class RootfsTest {
 
     // ── 真跑一遍（门控）──────────────────────────────────────
 
-    /** 把命令包进一个用户命名空间里当「假 root」跑 —— 本地验证用，设备上换成 libsu 的真 root。 */
-    private class UnshareShellChannel : ShellChannel {
+    /**
+     * 把命令包进一个用户命名空间里当「假 root」跑 —— 本地验证用，设备上换成 libsu 的真 root。
+     *
+     * 每条命令都是**独立**的 mount namespace（设备上不是：mount 会留着），所以这里在每条
+     * 命令前把 `/proc`、`/dev` 重新挂一遍 —— 模拟设备上「挂一次一直有效」的状态。
+     * 这也正说明 `RootFs.prepare()` 必须是幂等的。
+     */
+    private class UnshareShellChannel(private val rootfsDir: File) : ShellChannel {
         override val name = "unshare(userns=root)"
         override fun available(): Boolean = true
-        override fun exec(command: String, timeoutSeconds: Long): ShellResult =
-            ProcessShellChannel().exec("unshare -Urm /bin/sh -c ${quote(command)}", timeoutSeconds)
+        override fun exec(command: String, timeoutSeconds: Long): ShellResult {
+            val setup = buildString {
+                append("mkdir -p ${quote(rootfsDir.absolutePath)}/proc ${quote(rootfsDir.absolutePath)}/dev\n")
+                append("mountpoint -q ${quote(rootfsDir.absolutePath)}/proc || mount -t proc proc ${quote(rootfsDir.absolutePath)}/proc\n")
+                append("mountpoint -q ${quote(rootfsDir.absolutePath)}/dev || mount -o bind /dev ${quote(rootfsDir.absolutePath)}/dev\n")
+            }
+            return ProcessShellChannel().exec(
+                "unshare -Urm /bin/sh -c ${quote(setup + command)}",
+                timeoutSeconds,
+            )
+        }
     }
 
     /**
@@ -164,7 +193,7 @@ class RootfsTest {
         }
         assertTrue(File(rootfsDir, "bin/sh").isFile, "rootfs 该解出来了")
 
-        val shell = UnshareShellChannel()
+        val shell = UnshareShellChannel(rootfsDir)
         val rootFs = RootFs(rootfsDir, shell)
 
         val prep = rootFs.prepare()

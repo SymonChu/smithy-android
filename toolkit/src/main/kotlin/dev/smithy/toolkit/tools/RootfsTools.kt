@@ -3,6 +3,7 @@ package dev.smithy.toolkit.tools
 import dev.smithy.fs.AddOnCatalog
 import dev.smithy.fs.AddOnHost
 import dev.smithy.fs.RootFs
+import dev.smithy.fs.NativeToolchains
 import dev.smithy.fs.ShellChannels
 import dev.smithy.toolkit.ArgReader
 import dev.smithy.toolkit.Effect
@@ -93,8 +94,8 @@ object RootfsSetupTool : Tool {
             )
         }
         // 装完立刻让它能用：登记 chroot 工具链，之后 module.build 就走这条路
-        val sysroot = File(mgr.dirFor(AddOnCatalog.rootfsAlpine).parentFile, "native-toolchain/sysroot")
-        val registered = dev.smithy.fs.NativeToolchains.scanChroot(shell, mount, sysroot.takeIf { it.isDirectory })
+        val sysroot = NativeToolchains.chrootSysroot(mgr.root.parentFile ?: mgr.root)
+        val registered = NativeToolchains.scanChroot(shell, mount, sysroot)
         return Results.ok(
             "clang 装好了：${version.ifBlank { "（版本读不出来，但 apk 说装上了）" }}\n" +
                 if (registered != null) {

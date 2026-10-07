@@ -53,10 +53,27 @@ class RootFs(
             mountpoint -q /proc || mount -t proc proc /proc
             mountpoint -q /dev  || mount -o bind /dev /dev
             mountpoint -q /sys  || mount -o bind /sys /sys
-            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+            printf ${quote(resolvConf())} > /etc/resolv.conf
             echo prepared
         """.trimIndent()
         return sh(script, timeoutSeconds = 60)
+    }
+
+    /**
+     * chroot 里那份 `/etc/resolv.conf` 的内容。
+     *
+     * **先抄设备自己的**（有些网络只认本地 DNS，用公共 DNS 会解析失败 —— 症状是
+     * `bad address`，看着像网络不通，其实是 DNS 指错了），读不到才退回公共 DNS。
+     */
+    internal fun resolvConf(): String {
+        val fromDevice = runCatching {
+            File("/etc/resolv.conf").takeIf { it.isFile }?.readLines()
+                .orEmpty()
+                .map { it.trim() }
+                .filter { it.startsWith("nameserver") }
+        }.getOrNull().orEmpty()
+        val lines = if (fromDevice.isNotEmpty()) fromDevice else listOf("nameserver 1.1.1.1", "nameserver 8.8.8.8")
+        return lines.joinToString("\n") + "\n"
     }
 
     /** rootfs 里有没有编译器（没有就该先装）。 */
