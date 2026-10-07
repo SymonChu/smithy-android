@@ -13,8 +13,12 @@ github.com 连不上时，用 REST API 把本地提交推上去。
 
 **逐提交推**，历史与提交信息都保留，和 `git push` 的结果一致。
 
+**作者与时间也照原样带上**：不这样的话每个提交会被重新签成「现在 + 你的账号」，
+哈希就和本地不一样了 —— 内容虽然一致，但你下次 `git pull` 会撞上一次莫名其妙的分叉。
+带上之后 blob/tree/commit 全部与本地一致，哈希逐个相同。
+
 凭据：从 `~/.git-credentials` 里取（只读进内存，不打印、不落盘、不进命令行）。
-使用：`python3 tools/push-via-api.py [--dry-run] [远端名] [分支]`
+使用：`python3 tools/push-via-api.py [--dry-run] [--force] [远端名] [分支]`
 """
 from __future__ import annotations
 
@@ -82,6 +86,7 @@ def remote_repo(remote: str) -> str:
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     dry = "--dry-run" in sys.argv
+    force = "--force" in sys.argv
     remote = args[0] if args else "origin"
     branch = args[1] if len(args) > 1 else "main"
     repo = remote_repo(remote)
@@ -129,13 +134,26 @@ def main() -> None:
         tree = call("POST", f"{API}/repos/{repo}/git/trees", tok,
                     {"base_tree": call("GET", f"{API}/repos/{repo}/git/commits/{parent}", tok)["tree"]["sha"],
                      "tree": entries})
+        # 作者与提交时间照抄原来的：这样 commit 的哈希与本地逐个相同，
+        # 下次 git fetch 不会出现「内容一样、哈希不同」的分叉
+        meta = git("show", "-s", "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI", sha).strip().split("\x00")
+        who = [
+            {"name": meta[0], "email": meta[1], "date": meta[2]},
+            {"name": meta[3], "email": meta[4], "date": meta[5]},
+        ]
         commit = call("POST", f"{API}/repos/{repo}/git/commits", tok,
-                      {"message": body_msg, "tree": tree["sha"], "parents": [parent]})
+                      {"message": body_msg, "tree": tree["sha"], "parents": [parent],
+                       "author": who[0], "committer": who[1]})
         parent = commit["sha"]
+        local_tree = git("rev-parse", f"{sha}^{{tree}}").strip()
+        if tree["sha"] != local_tree:
+            sys.exit(f"⚠ {sha[:8]} 的 tree 与本地不一致（远端 {tree['sha'][:8]} / 本地 {local_tree[:8]}）—— 停下来，别把分支指过去")
 
     if not dry:
-        call("PATCH", f"{API}/repos/{repo}/git/refs/heads/{branch}", tok,
-             {"sha": parent, "force": False})
+        if force:
+            call("PATCH", f"{API}/repos/{repo}/git/refs/heads/{branch}", tok, {"sha": parent, "force": True})
+        else:
+            call("PATCH", f"{API}/repos/{repo}/git/refs/heads/{branch}", tok, {"sha": parent})
         print(f"推完了：{branch} → {parent[:8]}")
         print(f"https://github.com/{repo}/commits/{branch}")
 
