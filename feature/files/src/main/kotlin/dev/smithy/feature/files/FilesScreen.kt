@@ -5,6 +5,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,13 +25,38 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import dev.smithy.fs.FileKind
 import dev.smithy.fs.FsItem
 import dev.smithy.fs.humanSize
 import dev.smithy.fs.humanTime
 import dev.smithy.fs.RenameRules
+import dev.smithy.fs.RenamePlan
+import dev.smithy.design.SmithyCard
+import dev.smithy.design.SmithyEmptyState
+import dev.smithy.design.SmithyIcons
+import dev.smithy.design.SmithyIconButton
+import dev.smithy.design.SmithyMotion
+import dev.smithy.design.SmithyNumeric
+import dev.smithy.design.SmithyRowMeta
+import dev.smithy.design.SmithyRowTitle
+import dev.smithy.design.SmithySectionTitle
+import dev.smithy.design.SmithySkeletonList
+import dev.smithy.design.SmithyTopBar
+import dev.smithy.design.rememberSmithyHaptics
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import dev.smithy.design.SmithyMono
 import dev.smithy.design.SmithySpacing
 import androidx.compose.material3.ButtonDefaults
@@ -53,7 +81,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontFamily
@@ -490,7 +522,15 @@ fun FilesScreen(
             onClose = onCloseTab,
             onNew = onNewTab,
         )
-        state.message?.let { MessageBar(it, state.isError) }
+        // 消息条也走出现/消失动画：它常常在操作后立刻冒出来，
+        // 硬切会让人以为是自己刚才误触了哪里
+        AnimatedVisibility(
+            visible = state.message != null,
+            enter = expandVertically(SmithyMotion.enter()) + fadeIn(SmithyMotion.enter()),
+            exit = shrinkVertically(SmithyMotion.exit()) + fadeOut(SmithyMotion.exit()),
+        ) {
+            state.message?.let { MessageBar(it, state.isError) }
+        }
     }
 }
 
@@ -515,7 +555,7 @@ private fun DirHeader(
      */
     trailing: @Composable () -> Unit = {},
 ) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
         // Column：Surface 只能有一个子元素，而这里要放两行（路径行 + 粘贴提示行）
         Column {
             Row(
@@ -523,28 +563,38 @@ private fun DirHeader(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // ↑ 收成方图标按钮：它和面包屑是同一件事（换位置），但占的宽度
-                // 从「一个字 + TextButton 默认内边距」缩到一个 32dp 方块
-                FilledTonalIconButton(onClick = onGoUp, modifier = Modifier.size(32.dp)) {
-                    Text("↑", style = MaterialTheme.typography.bodyMedium)
-                }
+                // 返回上一级：真图标而不是「↑」字符 —— 字符的字形跟着系统字体走，
+                // 大小、粗细、基线都没法控制，和旁边的矢量图标放在一起就是不齐
+                SmithyIconButton(
+                    icon = SmithyIcons.Up,
+                    contentDescription = "返回上一级",
+                    onClick = onGoUp,
+                )
                 // 面包屑：**胶囊链**而不是文字按钮排。每一级都是一个可点的胶囊，
                 // 当前这一级填色加粗 —— 长路径滚起来时得能一眼认出自己在哪。
                 // 可点区域比旧版（TextButton 的内边距）大，误触更少
                 Row(
                     Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     crumbs.forEachIndexed { i, (full, name) ->
+                        if (i > 0) {
+                            // 分隔符：没有它，一串胶囊看起来像并列的按钮而不是一条路径
+                            Icon(
+                                imageVector = SmithyIcons.ChevronRight,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                        }
                         Surface(
                             onClick = { onJump(full) },
                             color = if (i == crumbs.lastIndex) {
                                 MaterialTheme.colorScheme.primaryContainer
                             } else {
-                                MaterialTheme.colorScheme.surfaceContainer
+                                Color.Transparent
                             },
-                            shape = MaterialTheme.shapes.extraSmall,
+                            shape = RoundedCornerShape(99.dp),
                         ) {
                             Text(
                                 name,
@@ -557,32 +607,48 @@ private fun DirHeader(
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
                                 },
+                                maxLines = 1,
                             )
                         }
                     }
                 }
                 // root 开关：保持**一眼看到**（同一个路径名在两种模式下含义不同），
-                // 但从文字按钮收成 32dp 徽章 —— 常亮状态不需要一整块可点区域
+                // 但从文字按钮收成药丸徽章 —— 常亮状态不需要一整块可点区域
                 Surface(
                     onClick = onToggleRoot,
                     color = if (rootMode) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
-                        MaterialTheme.colorScheme.surfaceContainer
+                        MaterialTheme.colorScheme.surfaceContainerHigh
                     },
-                    shape = MaterialTheme.shapes.extraSmall,
+                    shape = RoundedCornerShape(99.dp),
                 ) {
-                    Text(
-                        if (rootMode) "root ●" else "普通",
+                    Row(
                         Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (rootMode) FontWeight.Bold else FontWeight.Normal,
-                        color = if (rootMode) {
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = SmithyIcons.Root,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = if (rootMode) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (rootMode) "root" else "普通",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (rootMode) FontWeight.Bold else FontWeight.Normal,
+                            color = if (rootMode) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
                 }
                 trailing()
             }
@@ -590,17 +656,32 @@ private fun DirHeader(
             // 用户刚点了复制/剪切，下一步就是找地方贴，这时不该让他去找按钮
             clipboard?.let { clip ->
                 Row(
-                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+                    Modifier.fillMaxWidth()
+                        .padding(start = SmithySpacing.gutter, end = SmithySpacing.gap, bottom = SmithySpacing.gap),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Icon(
+                        imageVector = if (clip.cut) SmithyIcons.Cut else SmithyIcons.Copy,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(SmithySpacing.gap))
                     Text(
-                        if (clip.cut) "剪贴板：${clip.paths.size} 项（移动）" else "剪贴板：${clip.paths.size} 项（复制）",
+                        if (clip.cut) "${clip.paths.size} 项待移动" else "${clip.paths.size} 项待复制",
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.weight(1f),
                     )
-                    Button(onClick = onPaste) { Text("粘贴到此处") }
-                    Spacer(Modifier.width(6.dp))
-                    TextButton(onClick = onClearClipboard) { Text("取消") }
+                    Button(onClick = onPaste) {
+                        Icon(SmithyIcons.Paste, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("粘贴到此处")
+                    }
+                    SmithyIconButton(
+                        icon = SmithyIcons.Close,
+                        contentDescription = "取消",
+                        onClick = onClearClipboard,
+                    )
                 }
             }
         }
@@ -623,36 +704,106 @@ private fun DirToolbar(
     onNewFile: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+            .padding(horizontal = SmithySpacing.gutter, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 一个静态的排序图标打头：告诉人「这一串是什么」。没有它，那排药丸看起来
+        // 像一排并列的筛选按钮，看不出和排序有关
+        Icon(
+            imageVector = SmithyIcons.Sort,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         SortBy.entries.forEach { by ->
-            // 选中项用字重+颜色区分，不用 Chip：那需要 experimental 注解，
-            // 而这里要的只是「哪个是当前排序」
-            TextButton(onClick = { onSort(by) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-                Text(
-                    by.label,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = if (by == sortBy) FontWeight.Bold else FontWeight.Normal,
-                    color = if (by == sortBy) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            ToolbarPill(label = by.label, onClick = { onSort(by) }, active = by == sortBy)
+        }
+        // 「|」字符分隔符换成真正的分隔线：字符的粗细、高低都跟着字体走，
+        // 在药丸中间显不出层次，只显得脏
+        VerticalDivider(
+            modifier = Modifier.height(18.dp),
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        // 隐藏项：图标 + 文字一起变（只变颜色的话，暗色下几乎看不出来）
+        ToolbarPill(
+            label = if (showHidden) "含隐藏项" else "隐藏项",
+            active = showHidden,
+            icon = if (showHidden) SmithyIcons.HiddenOn else SmithyIcons.HiddenOff,
+            onClick = onToggleHidden,
+        )
+        VerticalDivider(
+            modifier = Modifier.height(18.dp),
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        ToolbarPill(
+            label = "新建文件夹",
+            icon = SmithyIcons.NewFolder,
+            onClick = onNewFolder,
+        )
+        ToolbarPill(
+            label = "新建文件",
+            icon = SmithyIcons.NewFile,
+            onClick = onNewFile,
+        )
+    }
+}
+
+/**
+ * 工具条上的药丸。
+ *
+ * [active] 用 `secondaryContainer` 而不是「字重加粗 + 主色」：加粗会让这一行的文字
+ * 宽度变来变去（同一个名字选中前后宽度不同 → 旁边的药丸会跟着挪），而填色不会。
+ */
+@Composable
+private fun ToolbarPill(
+    label: String,
+    onClick: () -> Unit,
+    active: Boolean = false,
+    icon: ImageVector? = null,
+    enabled: Boolean = true,
+    danger: Boolean = false,
+) {
+    val haptics = rememberSmithyHaptics()
+    val container by animateColorAsState(
+        targetValue = if (active) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        animationSpec = SmithyMotion.state(),
+        label = "pillContainer",
+    )
+    val content = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        danger -> MaterialTheme.colorScheme.error
+        active -> MaterialTheme.colorScheme.onSecondaryContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        onClick = {
+            // 灰掉的药丸仍可点会让「为什么没反应」变成一次困惑，但**不震动**、
+            // 也不动 —— 用触感明确回一句「现在不行」
+            if (!enabled) {
+                haptics.warn()
+                return@Surface
             }
-        }
-        Text("|", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
-        TextButton(onClick = onToggleHidden, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-            Text(
-                if (showHidden) "隐藏项显示中" else "隐藏项",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (showHidden) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Text("|", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
-        TextButton(onClick = onNewFolder, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-            Text("新建文件夹", style = MaterialTheme.typography.labelSmall)
-        }
-        TextButton(onClick = onNewFile, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-            Text("新建文件", style = MaterialTheme.typography.labelSmall)
+            haptics.tap()
+            onClick()
+        },
+        color = if (enabled) container else container.copy(alpha = 0.5f),
+        shape = RoundedCornerShape(99.dp),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (icon != null) {
+                Icon(icon, null, Modifier.size(14.dp), tint = content)
+                Spacer(Modifier.width(5.dp))
+            }
+            Text(label, style = MaterialTheme.typography.labelSmall, color = content)
         }
     }
 }
@@ -666,11 +817,21 @@ private fun DirToolbar(
  */
 @Composable
 private fun StorageAccessBar(state: StorageAccess.State, onRequest: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.medium) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical + 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 警告图标：这一条说的是「你看到的东西不完整」，光靠浅红底色不够醒目，
+            // 而它是整个文件页最要紧的一条信息
+            Icon(
+                imageVector = SmithyIcons.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.width(SmithySpacing.gap))
             Text(
                 StorageAccess.reasonFor(state),
                 style = MaterialTheme.typography.labelSmall,
@@ -697,21 +858,36 @@ private fun StorageAccessBar(state: StorageAccess.State, onRequest: () -> Unit) 
 @Composable
 private fun ShortcutBar(items: List<Pair<String, String>>, onJump: (String) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+            .padding(horizontal = SmithySpacing.gutter, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
     ) {
         items.forEach { (label, path) ->
+            val icon = shortcutIcon(label, path)
             Surface(
                 onClick = { onJump(path) },
-                color = MaterialTheme.colorScheme.surfaceContainer,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 shape = RoundedCornerShape(99.dp),
             ) {
-                Text(
-                    label,
-                    Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (icon != null) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -738,29 +914,65 @@ private fun SearchBar(
     onCancel: () -> Unit,
     onClose: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = 6.dp)) {
+    Column(
+        Modifier.fillMaxWidth()
+            .padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.gap),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
+            // 搜索框改圆角药丸 + 无描边：这是页面上唯一的输入框，方角描边的
+            // OutlinedTextField 一眼就是「安卓示例工程」的观感
+            TextField(
                 value = text,
                 onValueChange = onText,
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 placeholder = { Text("搜索文件名") },
+                shape = RoundedCornerShape(99.dp),
+                leadingIcon = {
+                    Icon(
+                        imageVector = SmithyIcons.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                trailingIcon = {
+                    if (text.isNotEmpty()) {
+                        SmithyIconButton(
+                            icon = SmithyIcons.ClearAll,
+                            contentDescription = "清空",
+                            onClick = { onText("") },
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
+                },
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                ),
             )
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(SmithySpacing.gap))
             if (search?.running == true) {
-                TextButton(onClick = onCancel) { Text("停止") }
+                Button(onClick = onCancel) {
+                    Icon(SmithyIcons.Stop, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("停止")
+                }
             } else {
-                TextButton(onClick = onRun) { Text("搜索") }
+                Button(onClick = onRun, enabled = text.isNotBlank()) {
+                    Text("搜索")
+                }
             }
         }
         Row(
-            Modifier.fillMaxWidth().padding(top = 4.dp),
+            Modifier.fillMaxWidth().padding(top = SmithySpacing.gap),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
         ) {
-            ScopeChip("本层", on = !recursive) { onScope(false) }
-            ScopeChip("含子目录", on = recursive) { onScope(true) }
+            ToolbarPill("本层", { onScope(false) }, active = !recursive)
+            ToolbarPill("含子目录", { onScope(true) }, active = recursive)
             Spacer(Modifier.weight(1f))
             // 扫描中必须有个东西在动，否则几秒的长扫描看起来就是卡死
             val note = when {
@@ -777,24 +989,12 @@ private fun SearchBar(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = onClose) { Text("关掉") }
+            SmithyIconButton(
+                icon = SmithyIcons.Close,
+                contentDescription = "关掉搜索",
+                onClick = onClose,
+            )
         }
-    }
-}
-
-@Composable
-private fun ScopeChip(label: String, on: Boolean, onClick: () -> Unit) {
-    Surface(
-        color = if (on) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-        shape = MaterialTheme.shapes.small,
-        modifier = Modifier.clickable(onClick = onClick),
-    ) {
-        Text(
-            label,
-            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = if (on) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -810,39 +1010,48 @@ private fun ScopeChip(label: String, on: Boolean, onClick: () -> Unit) {
 @Composable
 private fun SearchHits(hits: List<FsItem>, onReveal: (FsItem) -> Unit) {
     if (hits.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                "没有匹配的条目",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        SmithyEmptyState(
+            icon = SmithyIcons.Search,
+            title = "没有匹配的条目",
+            hint = "换个关键词，或者把范围切成「含子目录」再搜一次",
+            modifier = Modifier.fillMaxSize(),
+        )
         return
     }
     LazyColumn(Modifier.fillMaxSize()) {
         items(hits, key = { it.path }) { item ->
+            val kind = FileKind.of(item.name, item.dir)
             Row(
                 Modifier.fillMaxWidth().clickable { onReveal(item) }
+                    .defaultMinSize(minHeight = SmithySpacing.rowHeight)
                     .padding(horizontal = SmithySpacing.rowHorizontal, vertical = SmithySpacing.rowVertical),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Icon(
+                    imageVector = kind.icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(SmithySpacing.iconSize),
+                    tint = kind.tint(),
+                )
+                Spacer(Modifier.width(SmithySpacing.iconGap))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        FileKind.of(item.name, item.dir).emoji + " " + item.name,
-                        style = MaterialTheme.typography.bodyMedium,
+                        item.name,
+                        style = SmithyRowTitle,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
                     )
                     Text(
                         item.path.substringBeforeLast('/', ""),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = SmithyMono,
+                        style = SmithyRowMeta.copy(fontFamily = SmithyMono),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
                 if (!item.dir) {
                     Text(
                         humanSize(item.size),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = SmithyMono,
+                        style = SmithyNumeric,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -867,28 +1076,111 @@ private fun MoreMenu(
 ) {
     var open by remember { mutableStateOf(false) }
     Box {
-        TextButton(
+        // 用真图标替掉「⋮」字符：字符的粗细、垂直位置都跟系统字体走，
+        // 和旁边的矢量图标永远对不齐
+        SmithyIconButton(
+            icon = SmithyIcons.More,
+            contentDescription = "更多",
             onClick = { open = true },
-            contentPadding = PaddingValues(horizontal = 8.dp),
-        ) {
-            Text("⋮")
-        }
+        )
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(
                 text = { Text("导入文件") },
+                leadingIcon = { Icon(SmithyIcons.Upload, null, Modifier.size(20.dp)) },
                 onClick = { open = false; onImport() },
             )
             DropdownMenuItem(
-                text = { Text(if (searching) "关闭搜索" else "搜索") },
+                text = { Text(if (searching) "关闭搜索" else "搜索文件") },
+                leadingIcon = {
+                    Icon(
+                        if (searching) SmithyIcons.Close else SmithyIcons.Search,
+                        null,
+                        Modifier.size(20.dp),
+                    )
+                },
                 onClick = { open = false; onToggleSearch() },
             )
             DropdownMenuItem(
                 text = { Text("从设备提取应用") },
+                leadingIcon = { Icon(SmithyIcons.Apps, null, Modifier.size(20.dp)) },
                 onClick = { open = false; onExtractApp() },
             )
             DropdownMenuItem(
                 text = { Text("FTP 网络存储") },
+                leadingIcon = { Icon(SmithyIcons.Lan, null, Modifier.size(20.dp)) },
                 onClick = { open = false; onFtp() },
+            )
+        }
+    }
+}
+
+/**
+ * 列表行行首的 22dp 槽位。
+ *
+ * 平时是文件类型图标，进入多选时**原地**交叉淡入一个勾选圈 —— 两种状态占同一个槽位，
+ * 所以切换多选时整列文字纹丝不动。把勾选框「插进」行首（M3 的 Checkbox 自带 48dp
+ * 触摸区，实打实占宽）会让每一行同时右移，一百行一起跳看起来就是没打磨。
+ */
+@Composable
+private fun FileRowLead(item: FsItem, selecting: Boolean, selected: Boolean) {
+    val kind = FileKind.of(item.name, item.dir)
+    val markAlpha by animateFloatAsState(
+        targetValue = if (selecting) 1f else 0f,
+        animationSpec = SmithyMotion.state(),
+        label = "markAlpha",
+    )
+    val iconAlpha by animateFloatAsState(
+        targetValue = if (selecting) 0f else 1f,
+        animationSpec = SmithyMotion.state(),
+        label = "iconAlpha",
+    )
+    val tickAlpha by animateFloatAsState(
+        targetValue = if (selected) 1f else 0f,
+        animationSpec = SmithyMotion.state(),
+        label = "tickAlpha",
+    )
+    val fill by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            Color.Transparent
+        },
+        animationSpec = SmithyMotion.state(),
+        label = "markFill",
+    )
+    Box(
+        Modifier.size(SmithySpacing.iconSize),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = kind.icon,
+            contentDescription = null,
+            modifier = Modifier.size(SmithySpacing.iconSize).alpha(iconAlpha),
+            tint = kind.tint(),
+        )
+        // 勾选圈始终参与布局（只是透明），这样它出现时不会触发一次重新测量
+        Box(
+            Modifier
+                .size(20.dp)
+                .alpha(markAlpha)
+                .clip(CircleShape)
+                .background(fill)
+                .border(
+                    width = 1.5.dp,
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                    shape = CircleShape,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = SmithyIcons.Check,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp).alpha(tickAlpha),
+                tint = MaterialTheme.colorScheme.onPrimary,
             )
         }
     }
@@ -918,60 +1210,96 @@ private fun DirList(
     var menuFor by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<FsItem?>(null) }
     var deleting by remember { mutableStateOf<FsItem?>(null) }
+    val haptics = rememberSmithyHaptics()
     val filtered = state.items
     if (filtered.isEmpty()) {
-        Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Text(
-                state.busy ?: "这个目录是空的",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // 「还没读完」和「这里确实没有」是两件事，原先都用同一行灰字，加载中看起来像出错：
+        // 加载给骨架（预告布局），空目录给空态（说明原因 + 下一步）
+        if (state.busy != null) {
+            SmithySkeletonList(modifier)
+        } else {
+            SmithyEmptyState(
+                icon = SmithyIcons.Files,
+                title = "这个目录是空的",
+                hint = "上面那排可以新建文件夹 / 新建文件；也可以从别的目录复制过来",
+                modifier = modifier,
             )
         }
         return
     }
     LazyColumn(modifier.fillMaxWidth()) {
         items(filtered, key = { it.path }) { item ->
-            Box {
+            // animateItem：重命名、删除、排序变化时那一行是**滑**到新位置而不是瞬间跳过去 ——
+            // 密集列表里「谁动了」全靠这个
+            Box(Modifier.animateItem()) {
+                val selected = item.path in state.selected
+                // 选中底色也走动画：多选是连续来回操作，硬切会闪
+                val rowBg by animateColorAsState(
+                    targetValue = if (selected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    animationSpec = SmithyMotion.state(),
+                    label = "rowBg",
+                )
                 Row(
                     Modifier.fillMaxWidth()
+                        .background(rowBg)
                         .combinedClickable(
                             onClick = {
                                 // 选择模式下点击 = 勾选/取消，而不是打开 ——
                                 // 否则「想多选」得先退出、再重新进，很别扭
                                 if (state.selecting) onToggleSelected(item.path) else onOpenItem(item)
                             },
-                            onLongClick = { menuFor = item.path },
+                            onLongClick = {
+                                // 长按的触感是「菜单要出来了」的第一反馈，比菜单画出来还早
+                                haptics.longPress()
+                                menuFor = item.path
+                            },
                         )
+                        .defaultMinSize(minHeight = SmithySpacing.rowHeight)
                         .padding(horizontal = SmithySpacing.rowHorizontal, vertical = SmithySpacing.rowVertical),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (state.selecting) {
-                        Checkbox(
-                            checked = item.path in state.selected,
-                            onCheckedChange = { onToggleSelected(item.path) },
-                        )
-                    }
+                    // 行首**只有一个 22dp 槽位**：平时放类型图标，多选时原地换成勾选圈。
+                    // 不把勾选框插进去（那会让整列文字在多选开关的一瞬间横向跳一下 ——
+                    // 这是最容易看出「没打磨」的地方）
+                    FileRowLead(
+                        item = item,
+                        selecting = state.selecting,
+                        selected = selected,
+                    )
+                    Spacer(Modifier.width(SmithySpacing.iconGap))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            FileKind.of(item.name, item.dir).emoji + " " + item.name,
-                            style = MaterialTheme.typography.bodyMedium,
+                            item.name,
+                            style = SmithyRowTitle,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
                         )
-                        if (!item.dir && item.maybeZip) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                "可展开",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
+                                humanTime(item.modified),
+                                style = SmithyRowMeta,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // zip/tar 说清「这个能点进去看」—— 光看名字看不出来
+                            if (!item.dir && item.maybeZip) {
+                                Text(
+                                    "  ·  可展开",
+                                    style = SmithyRowMeta,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                         }
                     }
-                    // 大小单独一列、右对齐、等宽 —— 结构没动，只是把这一列从
-                    // 「挤在名字下面那行」挪到右边并对齐：参差的数字扫一眼比不出大小，
+                    // 大小单独一列、右对齐、等宽 + 表格数字 —— 参差的数字扫一眼比不出大小，
                     // 而那正是列个文件列表最常做的事
                     if (!item.dir) {
                         Text(
                             humanSize(item.size),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = SmithyMono,
+                            style = SmithyNumeric,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -984,30 +1312,48 @@ private fun DirList(
                     // 多选是其中一种 —— 别为它常驻一个按钮
                     DropdownMenuItem(
                         text = { Text("多选") },
+                        leadingIcon = { Icon(SmithyIcons.SelectAll, null, Modifier.size(20.dp)) },
                         onClick = { menuFor = null; onEnterSelection(item) },
                     )
                     DropdownMenuItem(
                         text = { Text("属性 / 摘要") },
+                        leadingIcon = { Icon(SmithyIcons.Info, null, Modifier.size(20.dp)) },
                         onClick = { menuFor = null; onShowProperties(item) },
                     )
                     DropdownMenuItem(
                         text = { Text("改名") },
+                        leadingIcon = { Icon(SmithyIcons.Rename, null, Modifier.size(20.dp)) },
                         onClick = { menuFor = null; renaming = item },
                     )
                     // 十六进制只对文件有意义（目录没有字节可看）
                     if (!item.dir) {
                         DropdownMenuItem(
                             text = { Text("十六进制") },
+                            leadingIcon = { Icon(SmithyIcons.Hex, null, Modifier.size(20.dp)) },
                             onClick = { menuFor = null; onViewHex(item) },
                         )
                     }
                     DropdownMenuItem(
-                        text = { Text("删除") },
+                        text = { Text("权限 / 属主") },
+                        leadingIcon = { Icon(SmithyIcons.Permission, null, Modifier.size(20.dp)) },
+                        onClick = { menuFor = null; onShowProperties(item) },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text("删除", color = MaterialTheme.colorScheme.error)
+                        },
+                        leadingIcon = {
+                            Icon(
+                                SmithyIcons.Delete,
+                                null,
+                                Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        },
                         onClick = { menuFor = null; deleting = item },
                     )
                 }
             }
-            HorizontalDivider()
         }
     }
 
@@ -1050,38 +1396,112 @@ private fun SelectionBar(
     onDelete: () -> Unit,
     onZip: (String) -> Unit,
 ) {
-    var zipping by remember { mutableStateOf(false) }
-    val plan = state.renamePlan
-    // 只在多选中显示。非多选时整栏都不该占位置 ——
-    // 进多选的入口是**长按文件弹菜单**，而不是一个常驻按钮
-    if (!state.selecting) return
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // 这一栏只在多选中才显示（由调用方控制），所以不需要「多选」入口 ——
-                // 进多选靠长按文件弹菜单。常驻一个「多选」按钮是让所有人替少数用法付费
-                TextButton(onClick = onToggleSelecting) { Text("退出多选") }
-                TextButton(onClick = onSelectAll) { Text("全选文件") }
-                TextButton(onClick = onClear) { Text("清空") }
-                Spacer(Modifier.weight(1f))
-                Text("${state.selected.size} 项", style = MaterialTheme.typography.labelLarge)
-            }
+    // 整栏的进出做成展开动画：多选是个「模式」，模式切换如果瞬间、无声，
+    // 用户会不确定自己是不是真的进了多选
+    AnimatedVisibility(
+        visible = state.selecting,
+        enter = expandVertically(SmithyMotion.enter()) + fadeIn(SmithyMotion.enter()),
+        exit = shrinkVertically(SmithyMotion.exit()) + fadeOut(SmithyMotion.exit()),
+    ) {
+        SelectionBarContent(
+            state = state,
+            onToggleSelecting = onToggleSelecting,
+            onSelectAll = onSelectAll,
+            onClear = onClear,
+            onRulesChange = onRulesChange,
+            onApply = onApply,
+            onCopy = onCopy,
+            onCut = onCut,
+            onDelete = onDelete,
+            onZip = onZip,
+        )
+    }
+}
 
-            // 常用动作排在改名规则前面：它们是「拿选中的东西做点什么」，
-            // 而改名规则是一套要花时间调的参数，顺序上不该抢在前面。
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(onClick = onCopy, enabled = state.selected.isNotEmpty()) { Text("复制") }
-                OutlinedButton(onClick = onCut, enabled = state.selected.isNotEmpty()) { Text("剪切") }
-                OutlinedButton(onClick = { zipping = true }, enabled = state.selected.isNotEmpty()) { Text("打包 zip") }
-                OutlinedButton(
-                    onClick = onDelete,
-                    enabled = state.selected.isNotEmpty(),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error,
-                    ),
-                ) { Text("删除") }
+/**
+ * 多选栏本体。
+ *
+ * 从 [SelectionBar] 里拆出来，是为了让它被 `AnimatedVisibility` 包住时不必整体缩进一层；
+ * 顺带把「什么时候显示」和「显示什么」分成两个函数，读起来也更清楚。
+ */
+@Composable
+private fun SelectionBarContent(
+    state: FilesUiState,
+    onToggleSelecting: () -> Unit,
+    onSelectAll: () -> Unit,
+    onClear: () -> Unit,
+    onRulesChange: (RenameRules) -> Unit,
+    onApply: () -> Unit,
+    onCopy: () -> Unit,
+    onCut: () -> Unit,
+    onDelete: () -> Unit,
+    onZip: (String) -> Unit,
+) {
+    var zipping by remember { mutableStateOf(false) }
+    var showRules by remember { mutableStateOf(false) }
+    val plan = state.renamePlan
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        Column(
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 三个图标 + 一个计数：这一行原本是三个 TextButton，占掉半个屏幕宽，
+                // 而它们的含义（退出 / 全选 / 清空）都强到用一个图标就够
+                SmithyIconButton(
+                    icon = SmithyIcons.Close,
+                    contentDescription = "退出多选",
+                    onClick = onToggleSelecting,
+                )
+                SmithyIconButton(
+                    icon = SmithyIcons.SelectAll,
+                    contentDescription = "全选文件",
+                    onClick = onSelectAll,
+                )
+                SmithyIconButton(
+                    icon = SmithyIcons.Deselect,
+                    contentDescription = "清空选择",
+                    onClick = onClear,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "已选 ${state.selected.size} 项",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (state.selected.isEmpty()) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                )
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(SmithySpacing.gap))
+
+            // 动作用药丸而不是描边按钮：描边按钮在这一屏会出现四个，边框把视线割碎；
+            // 药丸靠底色区分，能一眼看出「哪个是按下去的」
+            val none = state.selected.isEmpty()
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
+            ) {
+                ToolbarPill("复制", onCopy, icon = SmithyIcons.Copy, enabled = !none)
+                ToolbarPill("剪切", onCut, icon = SmithyIcons.Cut, enabled = !none)
+                ToolbarPill("打包 zip", { zipping = true }, icon = SmithyIcons.Zip, enabled = !none)
+                ToolbarPill(
+                    "删除",
+                    onDelete,
+                    icon = SmithyIcons.Delete,
+                    enabled = !none,
+                    danger = true,
+                )
+                // 改名规则默认**收起**：进多选多半是为了复制 / 删除 / 打包，
+                // 而六个输入框 + 预览 + 应用按钮是这一屏最重的一块内容
+                ToolbarPill(
+                    "批量改名",
+                    { showRules = !showRules },
+                    icon = SmithyIcons.Rename,
+                    active = showRules,
+                )
+            }
 
             // 打包：问名字（默认 archive.zip），目标已存在时 VM 会拒绝并说明
             if (zipping) {
@@ -1096,46 +1516,84 @@ private fun SelectionBar(
                 )
             }
 
-            RulesEditor(state.renameRules, onRulesChange)
+            // 改名规则整块**收起**：进多选多半是为了复制 / 删除 / 打包，而六个输入框
+            // 加预览加应用按钮是这一屏最重的一块内容，不该一进多选就砸在眼前
+            AnimatedVisibility(
+                visible = showRules,
+                enter = expandVertically(SmithyMotion.enter()) + fadeIn(SmithyMotion.enter()),
+                exit = shrinkVertically(SmithyMotion.exit()) + fadeOut(SmithyMotion.exit()),
+            ) {
+                RenameRulesPanel(
+                    rules = state.renameRules,
+                    onRulesChange = onRulesChange,
+                    plan = plan,
+                    onApply = onApply,
+                )
+            }
+        }
+    }
+}
 
-            plan?.let { p ->
-                // 撞名时说清后果，而不是只把「应用」变灰 —— 灰按钮不解释为什么
-                if (p.conflicts.isNotEmpty()) {
-                    Text(
-                        "有 ${p.conflicts.size} 个目标名重复或已存在，不能执行：" +
-                            p.conflicts.take(3).joinToString() +
-                            "（会覆盖掉别的文件）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                } else if (!p.hasChanges) {
-                    Text(
-                        "当前规则不会改动任何名字",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+/**
+ * 批量改名的规则与预览。
+ *
+ * 「预览边调边出」是这块的核心约定，见 [RulesEditor] 的注释 —— 改名的规则是在这一屏
+ * 现场试出来的，所以预览必须和输入框在同一个视野里，不能藏进二级页面。
+ */
+@Composable
+private fun RenameRulesPanel(
+    rules: RenameRules,
+    onRulesChange: (RenameRules) -> Unit,
+    plan: RenamePlan?,
+    onApply: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(top = SmithySpacing.gap)) {
+        RulesEditor(rules, onRulesChange)
 
-                // 预览：只列真正会变的，且最多 8 条（改几百个时列表会淹没界面）
-                p.changed.take(8).forEach { item ->
-                    Text(
-                        "${item.from}  →  ${item.to}",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-                if (p.changed.size > 8) {
-                    Text(
-                        "…以及另外 ${p.changed.size - 8} 项",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+        plan?.let { p ->
+            Spacer(Modifier.height(SmithySpacing.gap))
+            // 撞名时说清后果，而不是只把「应用」变灰 —— 灰按钮不解释为什么
+            if (p.conflicts.isNotEmpty()) {
+                Text(
+                    "有 ${p.conflicts.size} 个目标名重复或已存在，不能执行：" +
+                        p.conflicts.take(3).joinToString() +
+                        "（会覆盖掉别的文件）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            } else if (!p.hasChanges) {
+                Text(
+                    "当前规则不会改动任何名字",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
-                Spacer(Modifier.height(6.dp))
-                Button(onClick = onApply, enabled = p.canApply) {
-                    Text("应用（改 ${p.changed.size} 项）")
-                }
+            // 预览：只列真正会变的，且最多 8 条（改几百个时列表会淹没界面）
+            p.changed.take(8).forEach { item ->
+                Text(
+                    "${item.from}  →  ${item.to}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            if (p.changed.size > 8) {
+                Text(
+                    "…以及另外 ${p.changed.size - 8} 项",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Spacer(Modifier.height(SmithySpacing.gap))
+            Button(
+                onClick = onApply,
+                enabled = p.canApply,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(SmithyIcons.Rename, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("应用（改 ${p.changed.size} 项）")
             }
         }
     }
@@ -1192,7 +1650,10 @@ private fun PropertiesDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("属性") },
+        shape = MaterialTheme.shapes.extraLarge,
+        title = {
+            DialogTitle(icon = SmithyIcons.Info, text = "属性")
+        },
         text = {
             Column(
                 Modifier.verticalScroll(rememberScrollState()),
@@ -1207,7 +1668,7 @@ private fun PropertiesDialog(
                 if (props.mode != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         PropLine("权限", props.mode, Modifier.weight(1f))
-                        TextButton(onClick = onChmod) { Text("改") }
+                        TextButton(onClick = onChmod) { Text("改权限") }
                     }
                 }
                 // 属主同理：读不到不显示。改属主是独立入口 —— 和权限分开，
@@ -1215,7 +1676,7 @@ private fun PropertiesDialog(
                 if (props.owner != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         PropLine("属主", "${props.owner}:${props.group ?: ""}", Modifier.weight(1f))
-                        TextButton(onClick = onChown) { Text("改") }
+                        TextButton(onClick = onChown) { Text("改属主") }
                     }
                 }
                 props.note?.let { PropLine("摘要", it) }
@@ -1257,13 +1718,34 @@ private fun TextInputDialog(
     var text by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title) },
+        shape = MaterialTheme.shapes.extraLarge,
+        title = { DialogTitle(icon = SmithyIcons.Rename, text = title) },
         text = {
             OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true)
         },
         confirmButton = { TextButton(onClick = { onConfirm(text) }) { Text("确定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+/**
+ * 对话框标题的统一长相：图标 + 文字。
+ *
+ * 对话框是「突然盖住整屏」的东西，一个图标能让人在半秒内认出这是哪一类操作
+ * （属性 / 破坏性 / 连接），而纯文字标题得读一遍才知道。
+ */
+@Composable
+private fun DialogTitle(icon: ImageVector, text: String, tint: Color? = null) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = tint ?: MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.width(SmithySpacing.gap))
+        Text(text)
+    }
 }
 
 /**
@@ -1283,14 +1765,30 @@ private fun ConfirmDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title) },
+        shape = MaterialTheme.shapes.extraLarge,
+        title = {
+            DialogTitle(
+                icon = if (destructive) SmithyIcons.Warning else SmithyIcons.Info,
+                text = title,
+                tint = if (destructive) MaterialTheme.colorScheme.error else null,
+            )
+        },
         text = { Text(body) },
         confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text(
-                    confirm,
-                    color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
-                )
+            // 破坏性操作用**填色**按钮：文字按钮和「取消」长得一样，
+            // 而这两个按钮点错的代价并不对称
+            Button(
+                onClick = onConfirm,
+                colors = if (destructive) {
+                    ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    )
+                } else {
+                    ButtonDefaults.buttonColors()
+                },
+            ) {
+                Text(confirm)
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
@@ -1299,21 +1797,49 @@ private fun ConfirmDialog(
 
 @Composable
 private fun ZipHeader(zip: ZipUiState, busy: String?) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.fillMaxWidth().padding(12.dp)) {
-            Text(
-                "包内浏览",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = SmithyIcons.Package,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(SmithySpacing.gap))
+                Text(
+                    "包内浏览",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
             Text(
                 zip.path.substringAfterLast('/') + "  ·  ${zip.items.size} 个条目" +
                     if (zip.changes.isNotEmpty()) "  ·  待写入 ${zip.changes.size} 处" else "",
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
+                style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (busy != null) {
-                Text(busy, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                // 忙碌时给一个转圈：光有文字的话，几秒的解压看起来就是卡死
+                Row(
+                    Modifier.padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(SmithySpacing.gap))
+                    Text(
+                        busy,
+                        style = SmithyRowMeta,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
     }
@@ -1331,8 +1857,10 @@ private fun ZipList(
     LazyColumn(modifier.fillMaxWidth()) {
         items(zip.items, key = { it.path }) { entry ->
             val change = zip.changes[entry.path]
-            ZipRow(entry, change, onReplace, onDelete, onUndo, onEdit)
-            HorizontalDivider()
+            // 去分割线：条目靠图标列 + 行高分组，横线在长列表里只是噪音
+            Box(Modifier.animateItem()) {
+                ZipRow(entry, change, onReplace, onDelete, onUndo, onEdit)
+            }
         }
     }
 }
@@ -1347,40 +1875,81 @@ private fun ZipRow(
     onEdit: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val haptics = rememberSmithyHaptics()
+    val name = entry.path.substringAfterLast('/')
+    val kind = FileKind.of(name, false)
 
     Column(
         Modifier.fillMaxWidth()
-            .clickable { expanded = !expanded }
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .clickable {
+                haptics.tap()
+                expanded = !expanded
+            }
+            .padding(horizontal = SmithySpacing.rowHorizontal, vertical = SmithySpacing.rowVertical),
     ) {
-        Text(
-            entry.path,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = kind.icon,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = if (change != null) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Spacer(Modifier.width(SmithySpacing.iconGap))
+            Text(
+                entry.path,
+                style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                humanSize(entry.size),
+                style = SmithyNumeric,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // 展开箭头会转：不转的话，展开后箭头还指着右边，看起来像「还能再点进去」
+            Icon(
+                imageVector = SmithyIcons.ChevronRight,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(16.dp)
+                    .rotate(if (expanded) 90f else 0f),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Text(
             buildString {
                 append(if (entry.stored) "未压缩" else "已压缩")
-                append("  ·  ${humanSize(entry.size)}")
                 if (change != null) append("  ·  $change")
             },
-            style = MaterialTheme.typography.bodySmall,
+            style = SmithyRowMeta,
+            modifier = Modifier.padding(start = SmithySpacing.iconGap + 18.dp),
             color = if (change != null) {
                 MaterialTheme.colorScheme.primary
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
         )
-        if (expanded) {
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically(SmithyMotion.enter()) + fadeIn(SmithyMotion.enter()),
+            exit = shrinkVertically(SmithyMotion.exit()) + fadeOut(SmithyMotion.exit()),
+        ) {
+            Row(
+                Modifier.padding(top = SmithySpacing.gap),
+                horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
+            ) {
                 // 是不是文本由 VM 读了内容再判断并解释，这里不做扩展名过滤 ——
                 // 像 `META-INF/androidx.core.version` 这种没扩展名但确实是文本的会被误杀
-                OutlinedButton(onClick = { onEdit(entry.path) }) { Text("编辑") }
-                OutlinedButton(onClick = { onReplace(entry.path) }) { Text("替换") }
-                OutlinedButton(onClick = { onDelete(entry.path) }) { Text("删除") }
+                ToolbarPill("编辑", { onEdit(entry.path) }, icon = SmithyIcons.Rename)
+                ToolbarPill("替换", { onReplace(entry.path) }, icon = SmithyIcons.Upload)
+                ToolbarPill("删除", { onDelete(entry.path) }, icon = SmithyIcons.Delete, danger = true)
                 if (change != null) {
-                    TextButton(onClick = { onUndo(entry.path) }) { Text("撤销") }
+                    ToolbarPill("撤销", { onUndo(entry.path) }, icon = SmithyIcons.Undo)
                 }
             }
         }
@@ -1394,8 +1963,11 @@ private fun ZipActions(
     onSave: () -> Unit,
     onExtract: () -> Unit = {},
 ) {
-    Surface(tonalElevation = 2.dp) {
-        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
+        ) {
             if (zip.isTar) {
                 // tar 没有改动攒不攒的问题 —— 它是只读的，主操作就是解压
                 Text(
@@ -1410,15 +1982,21 @@ private fun ZipActions(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onClose, modifier = Modifier.weight(1f)) { Text("关闭") }
+            Spacer(Modifier.height(SmithySpacing.gap))
+            Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
+                OutlinedButton(onClick = onClose, modifier = Modifier.weight(1f)) {
+                    Icon(SmithyIcons.Close, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("关闭")
+                }
                 if (zip.isTar) {
                     Button(
                         onClick = onExtract,
                         enabled = !zip.saving,
                         modifier = Modifier.weight(1f),
                     ) {
+                        Icon(SmithyIcons.Unzip, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
                         Text(if (zip.saving) "解压中…" else "解压到旁边文件夹")
                     }
                 } else {
@@ -1427,6 +2005,8 @@ private fun ZipActions(
                         enabled = zip.changes.isNotEmpty() && !zip.saving,
                         modifier = Modifier.weight(1f),
                     ) {
+                        Icon(SmithyIcons.Save, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
                         Text(if (zip.saving) "保存中…" else "另存为…")
                     }
                 }
@@ -1438,17 +2018,42 @@ private fun ZipActions(
 @Composable
 private fun MessageBar(text: String, isError: Boolean) {
     Surface(
+        modifier = Modifier.padding(horizontal = SmithySpacing.gap, vertical = 4.dp),
         color = if (isError) {
             MaterialTheme.colorScheme.errorContainer
         } else {
             MaterialTheme.colorScheme.secondaryContainer
         },
+        shape = MaterialTheme.shapes.medium,
     ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.fillMaxWidth().padding(10.dp),
-        )
+        Row(
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.barVertical + 4.dp, vertical = SmithySpacing.barVertical),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 成功/失败得能一眼分开：原先两者只差底色，而浅红和浅灰在户外几乎一样
+            Icon(
+                imageVector = if (isError) SmithyIcons.Warning else SmithyIcons.Check,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = if (isError) {
+                    MaterialTheme.colorScheme.onErrorContainer
+                } else {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                },
+            )
+            Spacer(Modifier.width(SmithySpacing.gap))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (isError) {
+                    MaterialTheme.colorScheme.onErrorContainer
+                } else {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
@@ -1468,28 +2073,46 @@ private fun AppPickerScreen(
 ) {
     Column(Modifier.fillMaxSize()) {
         // 顶栏：返回 + 标题。这里不该出现面包屑 —— 我们不在文件系统里
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("从设备提取应用", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-            TextButton(onClick = onToggleSystem) {
-                Text(if (picker.includeSystem) "隐藏系统应用" else "含系统应用")
-            }
-            TextButton(onClick = onClose) { Text("关闭") }
-        }
+        SmithyTopBar(
+            title = "从设备提取应用",
+            subtitle = if (picker.loading) "正在读取已安装应用…" else "${picker.apps.size} 个应用",
+            onBack = onClose,
+            actions = {
+                ToolbarPill(
+                    label = if (picker.includeSystem) "含系统应用" else "只看用户应用",
+                    onClick = onToggleSystem,
+                    active = picker.includeSystem,
+                    icon = SmithyIcons.Apps,
+                )
+            },
+        )
         // 过滤框：装了两百个应用的设备上，没有它就得滚很久
-        OutlinedTextField(
+        TextField(
             value = picker.query,
             onValueChange = onQuery,
             singleLine = true,
             placeholder = { Text("按名字 / 包名过滤") },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gutter, vertical = 4.dp),
+            shape = RoundedCornerShape(99.dp),
+            leadingIcon = {
+                Icon(
+                    imageVector = SmithyIcons.Search,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+            ),
         )
         if (picker.loading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
+            // 读已装应用要一两秒，而且行数是可以预期的 —— 给骨架比给转圈更少「等」的感觉
+            SmithySkeletonList(Modifier.weight(1f), rows = 9)
             return@Column
         }
         val q = picker.query.trim().lowercase()
@@ -1497,20 +2120,41 @@ private fun AppPickerScreen(
             it.label.lowercase().contains(q) || it.packageName.lowercase().contains(q)
         }
         if (shown.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("没有匹配的应用", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            SmithyEmptyState(
+                icon = SmithyIcons.Apps,
+                title = "没有匹配的应用",
+                hint = "换个关键词；如果是系统应用，先把上面的范围切到「含系统应用」",
+                modifier = Modifier.weight(1f),
+            )
             return@Column
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.weight(1f)) {
             items(shown, key = { it.packageName }) { app ->
+                val haptics = rememberSmithyHaptics()
                 Row(
-                    Modifier.fillMaxWidth().clickable { onExtract(app) }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    Modifier.fillMaxWidth()
+                        .clickable {
+                            haptics.tap()
+                            onExtract(app)
+                        }
+                        .defaultMinSize(minHeight = SmithySpacing.rowHeight)
+                        .padding(horizontal = SmithySpacing.rowHorizontal, vertical = SmithySpacing.rowVertical),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Icon(
+                        imageVector = SmithyIcons.KindApk,
+                        contentDescription = null,
+                        modifier = Modifier.size(SmithySpacing.iconSize),
+                        tint = MaterialTheme.colorScheme.tertiary,
+                    )
+                    Spacer(Modifier.width(SmithySpacing.iconGap))
                     Column(Modifier.weight(1f)) {
-                        Text(app.label, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            app.label,
+                            style = SmithyRowTitle,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                        )
                         Text(
                             buildString {
                                 append(app.packageName)
@@ -1519,14 +2163,18 @@ private fun AppPickerScreen(
                                 if (app.splits.isNotEmpty()) append("  ·  split ×${app.splits.size}")
                                 if (app.isUpdatedSystem) append("  ·  系统应用的更新")
                             },
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
+                            style = SmithyRowMeta.copy(fontFamily = SmithyMono),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
                         )
                     }
-                    Text("提取", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    Icon(
+                        imageVector = SmithyIcons.Download,
+                        contentDescription = "提取到当前目录",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                 }
-                HorizontalDivider()
             }
         }
     }
@@ -1547,24 +2195,33 @@ private fun TabStrip(
     onClose: (Long) -> Unit,
     onNew: () -> Unit,
 ) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
         Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                .padding(horizontal = SmithySpacing.gap, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
         ) {
             tabs.forEach { tab ->
                 val active = tab.id == activeTabId
-                Surface(
-                    color = if (active) {
+                // 全圆角药丸，不是「上圆下直」的标签片：这一条在屏幕**底部**，
+                // 上圆角的形状是「贴在顶部标签栏」的语言，挪到底部就不再成立
+                val container by animateColorAsState(
+                    targetValue = if (active) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
-                        MaterialTheme.colorScheme.surface
+                        MaterialTheme.colorScheme.surfaceContainerHigh
                     },
-                    shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
+                    animationSpec = SmithyMotion.state(),
+                    label = "tabContainer",
+                )
+                Surface(
+                    onClick = { onSelect(tab.id) },
+                    color = container,
+                    shape = RoundedCornerShape(99.dp),
                 ) {
                     Row(
-                        Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        Modifier.padding(start = 12.dp, end = 2.dp, top = 4.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
@@ -1579,32 +2236,47 @@ private fun TabStrip(
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
                         )
+                        // 只剩一个标签时不显示关闭：关了就什么都不剩，那个 × 是个陷阱
                         if (tabs.size > 1) {
-                            Text(
-                                "×",
-                                style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier
-                                    .clickable { onClose(tab.id) }
-                                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                                color = if (active) {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
+                            Box(
+                                Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .clickable { onClose(tab.id) },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = SmithyIcons.Close,
+                                    contentDescription = "关闭标签",
+                                    modifier = Modifier.size(13.dp),
+                                    tint = if (active) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
+                        } else {
+                            Spacer(Modifier.width(6.dp))
                         }
                     }
                 }
             }
             // ＋ 新建标签
-            Text(
-                "＋",
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier
-                    .clickable(onClick = onNew)
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                color = MaterialTheme.colorScheme.primary,
-            )
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onNew),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = SmithyIcons.Plus,
+                    contentDescription = "新建标签",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 }
@@ -1622,7 +2294,8 @@ private fun FtpDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("连接 FTP") },
+        shape = MaterialTheme.shapes.extraLarge,
+        title = { DialogTitle(icon = SmithyIcons.Lan, text = "连接 FTP") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -1684,49 +2357,62 @@ private fun FtpScreen(
     onDisconnect: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("FTP · ${ftp.host}", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    ftp.path,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            TextButton(onClick = onDisconnect) { Text("断开") }
-        }
+        // 断开挂在返回位上：这一屏的「返回」含义就是离开这个连接，
+        // 另给一个「断开」按钮是同一件事的两种说法
+        SmithyTopBar(
+            title = "FTP · ${ftp.host}",
+            subtitle = ftp.path,
+            onBack = onDisconnect,
+        )
         if (ftp.entries.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("这个目录是空的", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            SmithyEmptyState(
+                icon = SmithyIcons.OpenFolder,
+                title = "这个目录是空的",
+                hint = "远端目录里没有条目。返回上一级，或断开连接",
+                modifier = Modifier.weight(1f),
+            )
             return@Column
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.weight(1f)) {
             items(ftp.entries, key = { it.path }) { e ->
+                val kind = FileKind.of(e.name, e.dir)
                 Row(
                     Modifier.fillMaxWidth().clickable {
                         if (e.dir) onOpenDir(e.path) else onDownload(e)
                     }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .defaultMinSize(minHeight = SmithySpacing.rowHeight)
+                    .padding(horizontal = SmithySpacing.rowHorizontal, vertical = SmithySpacing.rowVertical),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Icon(
+                        imageVector = kind.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(SmithySpacing.iconSize),
+                        tint = kind.tint(),
+                    )
+                    Spacer(Modifier.width(SmithySpacing.iconGap))
                     Text(
-                        FileKind.of(e.name, e.dir).emoji + " " + e.name,
-                        style = MaterialTheme.typography.bodyMedium,
+                        e.name,
+                        style = SmithyRowTitle,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
                     )
                     if (e.dir) {
-                        Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(
+                            imageVector = SmithyIcons.ChevronRight,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     } else {
                         Text(
                             if (ftp.downloading == e.name) "下载中…" else humanSize(e.size),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = SmithyMono,
+                            style = if (ftp.downloading == e.name) {
+                                SmithyRowMeta
+                            } else {
+                                SmithyNumeric
+                            },
                             color = if (ftp.downloading == e.name) {
                                 MaterialTheme.colorScheme.primary
                             } else {
@@ -1735,7 +2421,6 @@ private fun FtpScreen(
                         )
                     }
                 }
-                HorizontalDivider()
             }
         }
     }

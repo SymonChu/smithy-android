@@ -11,6 +11,13 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
@@ -18,6 +25,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -32,9 +42,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.smithy.design.SmithyIcons
+import dev.smithy.design.SmithyMotion
 import dev.smithy.design.SmithyTheme
+import dev.smithy.design.rememberSmithyHaptics
 import dev.smithy.feature.apk.ApkWorkbenchScreen
 import dev.smithy.feature.chat.ChatScreen
 import dev.smithy.feature.chat.ChatSettingsScreen
@@ -108,11 +122,18 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) {
-    Files("文件"),
-    Apk("工作台"),
-    Chat("对话"),
-    Settings("设置"),
+/**
+ * 一级导航。
+ *
+ * **带图标**：之前底栏是 `icon = {}` —— 四个纯文字标签排在一行，既不像导航栏，
+ * 也没法在扫视时快速定位（文字要读，图标要认）。图标走 [SmithyIcons] 的自绘集，
+ * 单色、跟随主题着色。
+ */
+private enum class Tab(val label: String, val icon: ImageVector) {
+    Files("文件", SmithyIcons.Files),
+    Apk("工作台", SmithyIcons.Workbench),
+    Chat("对话", SmithyIcons.Chat),
+    Settings("设置", SmithyIcons.Settings),
 }
 
 @Composable
@@ -179,122 +200,161 @@ fun SmithyRoot(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> if (uri != null) filesVm.importFromUri(uri) }
 
+    val haptics = rememberSmithyHaptics()
     Scaffold(
         modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars),
+        // 底色显式给 background：Scaffold 默认取 surface，而列表/卡片用的是
+        // surfaceContainer 系列 —— 不区分的话「列表底」和「底栏」是同一个颜色，
+        // 分组感就没了
+        containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            // 底栏压到 56dp（M3 默认 80dp）：图标为空、只有文字标签，
-            // 80dp 的一半高度都是空白 —— 4 个 tab 是导航不是展示，窄一点
-            // 每页多出两行内容的可视空间
-            NavigationBar(modifier = Modifier.height(56.dp)) {
+            // 64dp：比 M3 默认的 80 窄，但比上一版的 56 高 —— 加进图标后
+            // 56dp 装不下「22dp 图标 + 11sp 标签」，标签会贴着底边；
+            // 64 是能装下又不多占一行的那一档
+            NavigationBar(
+                modifier = Modifier.height(64.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 0.dp,
+            ) {
                 Tab.entries.forEach { t ->
+                    val selected = tab == t
                     NavigationBarItem(
-                        selected = tab == t,
-                        onClick = { tab = t },
-                        icon = {},
-                        label = { Text(t.label) },
+                        selected = selected,
+                        // 已经在这个 tab 上就别再触发一次重绘和震动
+                        onClick = {
+                            if (!selected) {
+                                haptics.toggle()
+                                tab = t
+                            }
+                        },
+                        icon = {
+                            Icon(
+                                imageVector = t.icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        },
+                        label = {
+                            Text(t.label, style = MaterialTheme.typography.labelSmall)
+                        },
                     )
                 }
             }
         },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
-            when (tab) {
-                Tab.Files -> FilesScreen(
-                    state = filesState,
-                    relative = filesVm::relative,
-                    onOpenDir = filesVm::openDir,
-                    onOpenItem = filesVm::open,
-                    onGoUp = filesVm::goUp,
-                    onCloseZip = filesVm::closeZip,
-                    onReplaceEntry = { entry ->
-                        replacingEntry = entry
-                        pickSource.launch(arrayOf("*/*"))
-                    },
-                    onDeleteEntry = filesVm::deleteEntry,
-                    onUndoEntry = filesVm::undoEntry,
-                    onSaveZip = { pickTarget.launch("output.zip") },
-                    onExtractTar = filesVm::extractTarHere,
-                    onOpenText = filesVm::openText,
-                    onSaveText = filesVm::saveText,
-                    onCancelEdit = filesVm::cancelEdit,
-                    onShowProperties = filesVm::showProperties,
-                    onRename = filesVm::rename,
-                    onDelete = filesVm::delete,
-                    onDismissProperties = filesVm::dismissProperties,
-                    onToggleSelecting = filesVm::toggleSelecting,
-                    onSelectAll = filesVm::selectAllFiles,
-                    onClearSelection = filesVm::clearSelection,
-                    onRulesChange = filesVm::onRulesChange,
-                    onApplyRename = filesVm::applyRename,
-                    onToggleSelected = filesVm::toggleSelected,
-                    onImport = { pickImport.launch(arrayOf("*/*")) },
-                    onToggleRoot = filesVm::toggleRoot,
-                    onCopy = filesVm::copySelected,
-                    onCut = filesVm::cutSelected,
-                    onDeleteSelected = filesVm::deleteSelected,
-                    onPaste = filesVm::paste,
-                    onClearClipboard = filesVm::clearClipboard,
-                    breadcrumbs = filesVm::breadcrumbs,
-                    shortcuts = filesVm::shortcuts,
-                    onJumpTo = filesVm::jumpTo,
-                    onSort = filesVm::setSort,
-                    onToggleHidden = filesVm::toggleHidden,
-                    onNewFolder = filesVm::mkdir,
-                    onNewFile = filesVm::touch,
-                    onChmod = filesVm::chmod,
-                    onChown = filesVm::chown,
-                    onViewHex = { item -> filesVm.viewHex(item.path) },
-                    onHexClose = filesVm::hexClose,
-                    onHexGoto = filesVm::hexGoto,
-                    onHexPage = filesVm::hexPage,
-                    onHexSave = filesVm::hexSave,
-                    onRequestAccess = requestStorageAccess,
-                    onSearch = filesVm::startSearch,
-                    onCancelSearch = filesVm::cancelSearch,
-                    onCloseSearch = filesVm::closeSearch,
-                    onRevealHit = filesVm::revealHit,
-                    onOpenAppPicker = filesVm::openAppPicker,
-                    onCloseAppPicker = filesVm::closeAppPicker,
-                    onFilterApps = filesVm::filterApps,
-                    onToggleSystemApps = filesVm::toggleSystemApps,
-                    onExtractApp = filesVm::extractApp,
-                    onNewTab = { filesVm.newTab() },
-                    onSelectTab = filesVm::selectTab,
-                    onCloseTab = filesVm::closeTab,
-                    onZipSelected = filesVm::zipSelected,
-                    onConnectFtp = { h, p, u, pw -> filesVm.connectFtp(h, p, u, pw) },
-                    onFtpOpenDir = filesVm::ftpOpenDir,
-                    onFtpDownload = filesVm::ftpDownload,
-                    onFtpDisconnect = filesVm::disconnectFtp,
-                )
+            // 切标签用 fade-through：旧页淡出（略缩），新页淡入。
+            // 一级导航**不做左右滑动** —— 滑动表达「同一层级里的相邻关系」，
+            // 而四个 tab 之间没有这种空间关系；滑动反而会让人以为能横着划过去。
+            AnimatedContent(
+                targetState = tab,
+                transitionSpec = {
+                    val enter = tween<Float>(SmithyMotion.Slow, easing = SmithyMotion.EaseEnter)
+                    val exit = tween<Float>(SmithyMotion.Fast, easing = SmithyMotion.EaseExit)
+                    (fadeIn(enter) + scaleIn(enter, initialScale = 0.96f)).togetherWith(
+                        fadeOut(exit) + scaleOut(exit, targetScale = 0.96f),
+                    )
+                },
+                label = "tab",
+            ) { current ->
+                when (current) {
+                    Tab.Files -> FilesScreen(
+                        state = filesState,
+                        relative = filesVm::relative,
+                        onOpenDir = filesVm::openDir,
+                        onOpenItem = filesVm::open,
+                        onGoUp = filesVm::goUp,
+                        onCloseZip = filesVm::closeZip,
+                        onReplaceEntry = { entry ->
+                            replacingEntry = entry
+                            pickSource.launch(arrayOf("*/*"))
+                        },
+                        onDeleteEntry = filesVm::deleteEntry,
+                        onUndoEntry = filesVm::undoEntry,
+                        onSaveZip = { pickTarget.launch("output.zip") },
+                        onExtractTar = filesVm::extractTarHere,
+                        onOpenText = filesVm::openText,
+                        onSaveText = filesVm::saveText,
+                        onCancelEdit = filesVm::cancelEdit,
+                        onShowProperties = filesVm::showProperties,
+                        onRename = filesVm::rename,
+                        onDelete = filesVm::delete,
+                        onDismissProperties = filesVm::dismissProperties,
+                        onToggleSelecting = filesVm::toggleSelecting,
+                        onSelectAll = filesVm::selectAllFiles,
+                        onClearSelection = filesVm::clearSelection,
+                        onRulesChange = filesVm::onRulesChange,
+                        onApplyRename = filesVm::applyRename,
+                        onToggleSelected = filesVm::toggleSelected,
+                        onImport = { pickImport.launch(arrayOf("*/*")) },
+                        onToggleRoot = filesVm::toggleRoot,
+                        onCopy = filesVm::copySelected,
+                        onCut = filesVm::cutSelected,
+                        onDeleteSelected = filesVm::deleteSelected,
+                        onPaste = filesVm::paste,
+                        onClearClipboard = filesVm::clearClipboard,
+                        breadcrumbs = filesVm::breadcrumbs,
+                        shortcuts = filesVm::shortcuts,
+                        onJumpTo = filesVm::jumpTo,
+                        onSort = filesVm::setSort,
+                        onToggleHidden = filesVm::toggleHidden,
+                        onNewFolder = filesVm::mkdir,
+                        onNewFile = filesVm::touch,
+                        onChmod = filesVm::chmod,
+                        onChown = filesVm::chown,
+                        onViewHex = { item -> filesVm.viewHex(item.path) },
+                        onHexClose = filesVm::hexClose,
+                        onHexGoto = filesVm::hexGoto,
+                        onHexPage = filesVm::hexPage,
+                        onHexSave = filesVm::hexSave,
+                        onRequestAccess = requestStorageAccess,
+                        onSearch = filesVm::startSearch,
+                        onCancelSearch = filesVm::cancelSearch,
+                        onCloseSearch = filesVm::closeSearch,
+                        onRevealHit = filesVm::revealHit,
+                        onOpenAppPicker = filesVm::openAppPicker,
+                        onCloseAppPicker = filesVm::closeAppPicker,
+                        onFilterApps = filesVm::filterApps,
+                        onToggleSystemApps = filesVm::toggleSystemApps,
+                        onExtractApp = filesVm::extractApp,
+                        onNewTab = { filesVm.newTab() },
+                        onSelectTab = filesVm::selectTab,
+                        onCloseTab = filesVm::closeTab,
+                        onZipSelected = filesVm::zipSelected,
+                        onConnectFtp = { h, p, u, pw -> filesVm.connectFtp(h, p, u, pw) },
+                        onFtpOpenDir = filesVm::ftpOpenDir,
+                        onFtpDownload = filesVm::ftpDownload,
+                        onFtpDisconnect = filesVm::disconnectFtp,
+                    )
 
-                Tab.Apk -> ApkWorkbenchScreen(
-                    incomingUri = incomingUri,
-                    onIncomingConsumed = onIncomingConsumed,
-                )
+                    Tab.Apk -> ApkWorkbenchScreen(
+                        incomingUri = incomingUri,
+                        onIncomingConsumed = onIncomingConsumed,
+                    )
 
-                Tab.Chat -> {
-                    // 切过来时刷新「当前操作的是哪个包」—— 用户可能刚在工作台换了包
-                    LaunchedEffect(tab) { chatVm.refreshWorkspace() }
-                    ChatScreen(
-                        state = chatState,
-                        workspaceName = chatState.workspaceName,
-                        onInput = chatVm::onInput,
-                        onSend = chatVm::send,
-                        onStop = chatVm::stop,
-                        onAttach = { pickApkForChat.launch(arrayOf("*/*")) },
-                        onClear = chatVm::clear,
-                        onConfirm = chatVm::answerConfirm,
+                    Tab.Chat -> {
+                        // 切过来时刷新「当前操作的是哪个包」—— 用户可能刚在工作台换了包
+                        LaunchedEffect(tab) { chatVm.refreshWorkspace() }
+                        ChatScreen(
+                            state = chatState,
+                            workspaceName = chatState.workspaceName,
+                            onInput = chatVm::onInput,
+                            onSend = chatVm::send,
+                            onStop = chatVm::stop,
+                            onAttach = { pickApkForChat.launch(arrayOf("*/*")) },
+                            onClear = chatVm::clear,
+                            onConfirm = chatVm::answerConfirm,
+                        )
+                    }
+
+                    Tab.Settings -> ChatSettingsScreen(
+                        config = chatState.config,
+                        problem = chatState.configProblem,
+                        trustWrites = chatState.trustWrites,
+                        onConfigChange = chatVm::onConfigChange,
+                        onTrustWritesChange = chatVm::setTrustWrites,
                     )
                 }
-
-                Tab.Settings -> ChatSettingsScreen(
-                    config = chatState.config,
-                    problem = chatState.configProblem,
-                    trustWrites = chatState.trustWrites,
-                    onConfigChange = chatVm::onConfigChange,
-                    onTrustWritesChange = chatVm::setTrustWrites,
-                )
             }
         }
     }

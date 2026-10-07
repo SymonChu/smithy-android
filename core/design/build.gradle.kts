@@ -30,4 +30,17 @@ dependencies {
     api(platform(libs.androidx.compose.bom))
     api(libs.androidx.compose.ui)
     api(libs.androidx.compose.material3)
+
+    // 只有图标集的**结构**测试（SmithyIconsTest）：图标是脚本生成的，编译通过
+    // 说明不了画出来是不是空的（平移层丢了就是不报错的空白图标）。
+    // ImageVector / PathParser 都是纯 Kotlin，不需要 Robolectric。
+    testImplementation(kotlin("test"))
+    testImplementation("junit:junit:4.13.2")
+}
+
+tasks.withType<Test>().configureEach {
+    testLogging {
+        showStandardStreams = true
+        events("passed", "failed", "skipped")
+    }
 }
