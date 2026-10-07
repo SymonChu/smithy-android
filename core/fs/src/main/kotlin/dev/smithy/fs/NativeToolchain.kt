@@ -68,6 +68,19 @@ interface NativeToolchain {
     fun describe(): String
 
     fun build(spec: NativeBuildSpec): NativeBuildResult
+
+    /**
+     * 这份工具链能不能**静态**链 libc++。
+     *
+     * NDK 的 sysroot 里有 `libc++_static.a` ✔；Termux 的 `libc++` 包**只给共享库**
+     * （`libc++_shared.so`），静态链不了 ✘ —— 那就退回 `-nostdlib++`：模板只用 C 头，
+     * 不需要 C++ 运行时，产物从 442KB 掉到 8.5KB，而且不再依赖 `libc++_shared.so`
+     * （这条才是关键：目标进程里没有它，带了就是「装上了但不加载」）。
+     */
+    fun supportsStaticLibcxx(): Boolean = true
+
+    /** 平台桩库（`liblog`、`libc` 这些）的目录。设备上是 `/system/lib64`（或 32 位的 `/system/lib`）。 */
+    fun platformLibDirs(spec: NativeBuildSpec): List<File> = emptyList()
 }
 
 /**
@@ -88,15 +101,45 @@ class ClangToolchain(
     private val clang: File,
     private val sysroot: File? = null,
     private val timeoutSeconds: Long = 600,
+    /**
+     * 跑编译器时补的环境变量。
+     *
+     * **bionic 工具链（Termux 那一套）必须有它**：`clang` 依赖包内的 `lib/libLLVM.so` 等，
+     * 而它的 RUNPATH 指的是 Termux 自己的前缀（手机上不存在）—— 只能靠 `LD_LIBRARY_PATH`
+     * 指到本包的 `lib/`；`PATH` 里也得有本包的 `bin/`，不然它找不到 `ld.lld` 去链接。
+     */
+    private val extraEnv: Map<String, String> = emptyMap(),
 ) : NativeToolchain {
 
     override val name: String get() = "clang"
 
     override fun available(): Boolean = clang.isFile && clang.canExecute()
 
+    /**
+     * 静态 libc++ 在不在 —— **按文件判断，不猜**。
+     *
+     * 猜错的表现是链接期一串 undefined，那时离原因已经很远了。NDK 的 sysroot 里
+     * `usr/lib/<triple>/libc++_static.a` 一定在；Termux 的 libc++ 包只有 `libc++_shared.so`。
+     */
+    override fun supportsStaticLibcxx(): Boolean {
+        val root = sysroot ?: return false
+        return NativeAbi.entries.any { File(root, "usr/lib/${it.clangTriple}/libc++_static.a").isFile } ||
+            File(root, "lib/libc++.a").isFile
+    }
+
+    /** 设备上的平台桩库目录。本机没有就返回空（不往命令行里塞不存在的路径）。 */
+    override fun platformLibDirs(spec: NativeBuildSpec): List<File> {
+        val dir = when (spec.abi) {
+            NativeAbi.ARM64_V8A, NativeAbi.X86_64, NativeAbi.RISCV64 -> "/system/lib64"
+            else -> "/system/lib"
+        }
+        return listOf(File(dir)).filter { it.isDirectory }
+    }
+
     override fun describe(): String = buildString {
         append(name).append("：").append(clang.absolutePath)
         append(if (sysroot != null) "；sysroot：${sysroot.absolutePath}" else "；没有 sysroot（只能用自带头文件的源码）")
+        if (extraEnv.isNotEmpty()) append("；环境：").append(extraEnv.keys.joinToString("/"))
         append("；").append(if (available()) "可用" else "不可用（文件不存在或没有执行位）")
     }
 
@@ -111,6 +154,8 @@ class ClangToolchain(
         sysroot?.let { root ->
             argv += "--sysroot=$root"
             existingDirs(
+                // Termux 那套是**平铺**布局：include/ 与 lib/ 直接在最外层
+                "$root/include",
                 "$root/usr/include",
                 // libc++ 的头（NDK 放在 sysroot 里）
                 "$root/usr/include/c++/v1",
@@ -119,13 +164,23 @@ class ClangToolchain(
             ).forEach { argv += listOf("-isystem", it) }
             // 平台库的目录：NDK 按 API 分目录，其余分发只有一个目录
             existingDirs(
+                "$root/lib",
+                // Termux 的**链接期桩库**放在按 ABI 命名的子目录里（aarch64-linux-android/lib）
+                "$root/${spec.abi.clangTriple}/lib",
                 "$root/usr/lib/${spec.abi.clangTriple}/${spec.apiLevel}",
                 "$root/usr/lib/${spec.abi.clangTriple}",
             ).forEach { argv += listOf("-L", it) }
         }
+        // 设备上的平台桩库：`-llog` 只在 /system/lib64 里（Termux 的 sysroot 不含它）
+        platformLibDirs(spec).forEach { argv += listOf("-L", it.absolutePath) }
         argv += "-o"
         argv += spec.outFile.absolutePath
-        argv += spec.flags
+        // 静态 libc++ 拿不到就换成 -nostdlib++（见 supportsStaticLibcxx）
+        argv += if (supportsStaticLibcxx()) {
+            spec.flags
+        } else {
+            spec.flags.flatMap { f -> if (f == "-static-libstdc++") listOf("-nostdlib++") else listOf(f) }
+        }
         argv += spec.sources.map { File(spec.sourceDir, it).absolutePath }
         return argv
     }
@@ -145,11 +200,13 @@ class ClangToolchain(
         val argv = commandLine(spec)
 
         return runCatching {
-            val process = ProcessBuilder(argv)
+            val pb = ProcessBuilder(argv)
                 // 在源码目录里跑：源码用相对路径 include 同目录的头（骨架就是这样）
                 .directory(spec.sourceDir)
                 .redirectErrorStream(true)
-                .start()
+            // bionic 工具链靠这个找到包内的 libLLVM / 自己的 ld.lld（见 extraEnv 注释）
+            if (extraEnv.isNotEmpty()) pb.environment().putAll(extraEnv)
+            val process = pb.start()
             // 先读完输出再等退出：编译日志多了以后，写满管道会把进程卡死
             val log = process.inputStream.bufferedReader().use { it.readText() }
             if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
@@ -278,19 +335,51 @@ object NativeToolchains {
      */
     fun locateIn(root: File): NativeToolchain? {
         if (!root.isDirectory) return null
-        directClang(root)?.let { return ClangToolchain(it, sysrootOf(root)) }
+        directClang(root)?.let {
+            return ClangToolchain(it, sysrootOf(root) ?: flatSysrootOf(root), extraEnv = envFor(root))
+        }
         // NDK 形态：toolchains/llvm/prebuilt/<host>/
         val prebuilt = File(root, "toolchains/llvm/prebuilt")
         val hosts = prebuilt.listFiles()?.filter { it.isDirectory }.orEmpty()
         for (host in hosts) {
             val clang = directClang(host) ?: continue
-            return ClangToolchain(clang, sysrootOf(host))
+            return ClangToolchain(clang, sysrootOf(host) ?: flatSysrootOf(host), extraEnv = envFor(host))
         }
         return null
     }
 
     /** `<root>/sysroot`；没有就给 null（不是错误：有的源码不需要额外头）。 */
     fun sysrootOf(root: File): File? = File(root, "sysroot").takeIf { it.isDirectory }
+
+    /**
+     * 平铺布局（Termux 那一套）的 sysroot 就是包根：`include/` 与 `lib/` 直接在最外层。
+     *
+     * 认这个是为了让「导入一份 Termux 工具链包」直接可用，不用在设备上再摆一次目录。
+     */
+    internal fun flatSysrootOf(root: File): File? =
+        root.takeIf { File(it, "include").isDirectory && File(it, "lib").isDirectory }
+
+    /**
+     * 包内布局（`bin/` 与 `lib/` 并排）时要补的环境变量。
+     *
+     * bionic 工具链（Termux 那一套）的 `clang` 依赖包内的 `lib/libLLVM.so`、要用包内的
+     * `ld.lld` 链接，而它们的 RUNPATH / 查找路径指的是 Termux 自己的前缀（手机上不存在）。
+     * 所以：`LD_LIBRARY_PATH` 指到本包 `lib/`，`PATH` 里加上本包 `bin/`。
+     * **不覆盖已有的值，而是追加** —— 设备上原来就有的路径不该被我们挤掉。
+     */
+    internal fun envFor(root: File): Map<String, String> {
+        val lib = File(root, "lib")
+        val bin = File(root, "bin")
+        if (!lib.isDirectory) return emptyMap()
+        val curLib = System.getenv("LD_LIBRARY_PATH").orEmpty()
+        val curPath = System.getenv("PATH").orEmpty()
+        return mapOf(
+            "LD_LIBRARY_PATH" to (listOf(lib.absolutePath) + curLib.split(':').filter { it.isNotBlank() })
+                .joinToString(":"),
+            "PATH" to (listOf(bin.absolutePath) + curPath.split(':').filter { it.isNotBlank() })
+                .joinToString(":"),
+        )
+    }
 
     private fun directClang(root: File): File? = listOf("clang++", "clang")
         .map { File(root, "bin/$it") }

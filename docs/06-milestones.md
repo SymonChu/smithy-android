@@ -185,11 +185,25 @@
 >   3. **手工解**到 `filesDir/native-toolchain` 或 `filesDir/ndk`（认 NDK 的
 >      `toolchains/llvm/prebuilt/<host>` 布局）。
 >
-> - **为什么必须有 rootfs 这条路**：**官方没有给 arm64 安卓用的 clang 二进制** ——
->   Google 的 NDK 只发 x86_64/darwin/windows 宿主机版（在手机上跑不起来），
->   LLVM 官方 release 也没有 android 目标（核对过 17/18/19 的资产表）。
->   而 Alpine 的 clang 是**原生 aarch64** 的 —— 所以「在手机上编」这条路的正解是
->   **rootfs + chroot**，不是去凑一个 clang 二进制。
+> - **路线 C（首选，免 root）：Termux 的 bionic 闭包**。官方确实没有给 arm64 安卓的 clang
+>   （NDK 只发 x86_64/darwin/windows 宿主机版；LLVM 官方 release 没有 android 目标），
+>   但 **Termux 的包就是原生 aarch64 + bionic** 的，能在应用沙箱里直接 execve —— 不需要 root、
+>   不需要 chroot。`tools/fetch-termux-toolchain.sh` 在电脑上按**索引解析依赖闭包**
+>   （`clang` + `ndk-sysroot` + `ndk-multilib-native-stubs`，四镜像 failover、逐包 SHA-256），
+>   产出约 **150MB 的 tar.gz**（装后约 370MB），传到手机走「导入工具链包…」。
+>   驱动侧已经认这种**平铺布局**（`include/`、`lib/`、`<abi>/lib/` 桩库、`LD_LIBRARY_PATH`
+>   指包内 `lib/`），并且因为 Termux 的 libc++ 只有共享库，会自动把 `-static-libstdc++`
+>   换成 `-nostdlib++`（产物从 442KB 掉到 8.5KB，且不带 `libc++_shared.so` 这条会致命的依赖）。
+>
+>   做法与包清单参考 **Soodok/Deepseek-Harness-Local-Android**（MIT）：
+>   `scripts/collect-termux-runtime.sh` 与 `engine/ExtensionManager.kt`（索引式闭包 + 镜像
+>   failover + 三态管理 + ELF 闭包审计），它证明了两件我们原先不确定的事：
+>   ① 从应用私有目录 execve 跑 bionic 二进制可行（Android 8–16，普通模式无 su）；
+>   ② `ndk-sysroot` 这个包就是 bionic 的头与桩库（28MB，比 NDK 里那份还新）。
+>
+> - **路线 A（备选，要 root）：rootfs + chroot**。Alpine 里 `apk add clang`。代码已就位
+>   （`ShellChannel` + `RootFs` + `ChrootClangToolchain` + `rootfs.setup` / `rootfs.exec`），
+>   留给「非 Magisk 或想要完整 Linux 用户态」的场景。
 >
 > - **已落地**：`ShellChannel`（root 通道，实现在 `:feature:apk` 用 libsu）+
 >   `RootFs`（部署到 `/data/local/tmp/smithy/rootfs`、挂 `/proc` `/dev`、写 `resolv.conf`、

@@ -60,6 +60,7 @@
 | rootfs（下载项，不进主包） | Alpine minirootfs 3.20（aarch64） | 各组件各自带许可（含 GPL-2.0 的 busybox 等） | `component.install id=rootfs-alpine` 按需下（3.9MB，sha256 对着上游的 `.sha256` 校验过）。它作为**独立程序**被用户下进来使用，不改变 App 自身许可；装/卸都在 App 里 |
 | Zygisk API 头 | `zygisk.hpp`（来自官方模块样例工程） | **0BSD** | **已核实**：措辞为 "permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted"，最宽松档，**与 GPL-3.0 完全兼容**。分发须保留版权声明，且头文件内明写 `DO NOT MODIFY ANY CODE IN THIS HEADER`。**现已随 zygisk 骨架分发**：原样放在 `core/fs/src/main/resources/dev/smithy/fs/zygisk.hpp`，`ModuleScaffoldTest` 用 SHA-256 钉住「一字未改」（要更新就换成官方原件） |
 | native 编译（M6-B，可选模块） | clang + Android sysroot + libc++ | Apache-2.0 with LLVM exception | 约 300-400MB，**按需下载，不进主包**。调用侧只依赖 `NativeToolchain` 接口（找不到就说清缺什么），工具链二进制放哪儿、怎么下、许可页怎么写，属下载器那一批（M5）的活 |
+| **手机上跑的工具链**（路线 C） | Termux 的 bionic 包闭包：`clang` + `ndk-sysroot` + `ndk-multilib-native-stubs`（含 llvm / lld / libllvm / libcompiler-rt / libc++） | clang/llvm/lld/libllvm/libcompiler-rt = Apache-2.0 with LLVM exception；libc++ = MIT/UIUC；其余依赖见包内 copyright | 由 `tools/fetch-termux-toolchain.sh` 在电脑上组装，**约 110MB 的 tar.gz**（装后约 400MB），传进手机导入。**刻意不含 `make`（GPL-3.0）**：这条路不需要它，且要避免 GPL 义务。闭包里另有 LGPL 的 `libiconv`、双许可的 `zstd` 等 —— **要对外分发这份 bundle 之前，必须先过一遍许可**（附上各包 copyright、给出对应源码获取方式）。目前只在用户自己的设备上用（自己下载、自己传），不构成对外分发 |
 
 **Zygisk API 版本对应**（写模板时需声明并在编译期校验）：
 
