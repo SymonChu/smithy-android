@@ -184,6 +184,7 @@ fun ApkWorkbenchScreen(
                     onCompile = { moduleVm.compile() },
                     onInstallComponent = moduleVm::installComponent,
                     onImportComponent = { bundlePicker.launch(arrayOf("*/*")) },
+                    onPrepareRootfs = moduleVm::prepareRootfsEnv,
                     onSetEnabled = moduleVm::setEnabled,
                     onScheduleRemove = moduleVm::scheduleRemove,
                     onUninstall = moduleVm::uninstallNow,

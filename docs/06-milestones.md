@@ -185,18 +185,23 @@
 >   3. **手工解**到 `filesDir/native-toolchain` 或 `filesDir/ndk`（认 NDK 的
 >      `toolchains/llvm/prebuilt/<host>` 布局）。
 >
-> - **还差的（卡在同一个物理事实上）**：**给 arm64 安卓用的 clang 二进制**。
+> - **为什么必须有 rootfs 这条路**：**官方没有给 arm64 安卓用的 clang 二进制** ——
 >   Google 的 NDK 只发 x86_64/darwin/windows 宿主机版（在手机上跑不起来），
->   LLVM 官方 release 也没有 android 目标（核对过 17/18/19 的资产表）。两条出路：
->   a. **rootfs + chroot**：Alpine 里 `apk add clang`（arm64 原生构建），拿 NDK 的 sysroot
->      当 `--sysroot` 交叉编。缺 root 通道执行（`rootfs.exec`：libsu + chroot）与真机调一轮。
->   b. **自建 bundle**：在 Linux 上用 NDK 交叉构建、或从 Termux 的包组装一份 bionic clang，
->      打成 zip（`bin/` + `sysroot/`）传到手机，走上面第 2 条；产出一份之后把它登记进
->      `AddOnCatalog`，「下载」那条路也就通了。
+>   LLVM 官方 release 也没有 android 目标（核对过 17/18/19 的资产表）。
+>   而 Alpine 的 clang 是**原生 aarch64** 的 —— 所以「在手机上编」这条路的正解是
+>   **rootfs + chroot**，不是去凑一个 clang 二进制。
 >
-> - **没验证的**：真机 ABI 矩阵（内置 Zygisk / 独立实现 / 无 Root 三种环境）、
->   「编出来的 so 在设备上真的能被加载」、以及**从应用私有目录执行二进制**这条
->   （Android 10+ 对可写目录的执行策略，见 `SmithyApp.addOnRoot` 的注释）—— 这三条要真机。
+> - **已落地**：`ShellChannel`（root 通道，实现在 `:feature:apk` 用 libsu）+
+>   `RootFs`（部署到 `/data/local/tmp/smithy/rootfs`、挂 `/proc` `/dev`、写 `resolv.conf`、
+>   `apk add clang`）+ `ChrootClangToolchain`（把源码与 sysroot 拷进 rootfs 的 `smithy-build/`，
+>   在 chroot 里编，产物拷回来）+ 工具 `rootfs.setup` / `rootfs.exec` + 模块页的
+>   「准备编译环境」按钮。**rootfs 与 sysroot 两个前提都能按需下**（`component.install`），
+>   所以从零到能编不需要任何外部产物。
+>
+> - **还没验证的**（都要真机）：root 授权后 chroot/mount 会不会被 SELinux 拦；
+>   `apk add clang` 在设备网络下拉得动（本机验证时遇到过 TLS 证书验不过，换 http 镜像即可，
+>   设备上应该不会）；编出来的 so 能不能被 Zygisk 加载；以及 ABI 矩阵
+>   （内置 Zygisk / 独立实现 / 无 Root 三种环境）。
 
 **任务**
 1. 以 M5 的「构建模块」为底座，追加 `clang` + Android `sysroot` + `libc++`（约 300-400MB，按需下载，不进主包）

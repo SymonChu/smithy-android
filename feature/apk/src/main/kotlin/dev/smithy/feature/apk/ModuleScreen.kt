@@ -54,6 +54,7 @@ import dev.smithy.fs.ModuleProp
 import dev.smithy.fs.AddOnCatalog
 import dev.smithy.fs.AddOnHost
 import dev.smithy.fs.NativeToolchains
+import dev.smithy.fs.ShellChannels
 import dev.smithy.fs.humanSize
 
 /**
@@ -92,6 +93,8 @@ fun ModuleScreen(
     onInstallComponent: (String) -> Unit,
     /** 把手机本地的一份归档灌进去 —— 目前装上 native 工具链的唯一一条路。 */
     onImportComponent: () -> Unit,
+    /** 「准备编译环境」：部署 rootfs 并在里面 apk add clang（要 root）。 */
+    onPrepareRootfs: () -> Unit,
     onSetEnabled: (String, Boolean) -> Unit,
     onScheduleRemove: (String) -> Unit,
     onUninstall: (String) -> Unit,
@@ -188,7 +191,7 @@ fun ModuleScreen(
             } else {
                 PropCard(state, onVersion, onVersionCode, onName, onDescription, onSaveProp)
                 StructureCard(state)
-                NativeCard(state, onCompile, onInstallComponent, onImportComponent)
+                NativeCard(state, onCompile, onInstallComponent, onImportComponent, onPrepareRootfs)
                 EntriesCard(state, onEditEntry)
                 InstallCard(state, onInstall)
             }
@@ -504,6 +507,7 @@ private fun NativeCard(
     onCompile: () -> Unit,
     onInstallComponent: (String) -> Unit,
     onImportComponent: () -> Unit,
+    onPrepareRootfs: () -> Unit,
 ) {
     val sources = state.entries.filter {
         it.startsWith("jni/") && it.substringAfterLast('.', "").lowercase() in setOf("cpp", "cc", "cxx", "c")
@@ -541,6 +545,10 @@ private fun NativeCard(
                     enabled = !rootfsInstalled,
                 )
                 Pill("导入工具链包…", onImportComponent, icon = SmithyIcons.OpenFolder)
+                // 装了 rootfs、也有 root 的话，还有第三条更省事的路：在 rootfs 里装编译器
+                if (rootfsInstalled && ShellChannels.current()?.available() == true) {
+                    Pill("准备编译环境（在 rootfs 里装 clang）", onPrepareRootfs, icon = SmithyIcons.Package)
+                }
             }
         }
         Spacer(Modifier.height(SmithySpacing.gap))

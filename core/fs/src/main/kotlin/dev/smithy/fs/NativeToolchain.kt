@@ -236,6 +236,24 @@ object NativeToolchains {
     }
 
     /**
+     * 检查「rootfs + chroot」这条路通不通，通了就登记成当前工具链。
+     *
+     * 和 [scan] 分开是有意的：这一条要**跑命令**（要 root、要几百毫秒到几秒），
+     * 不能塞进 App 启动的同步流程里。由模块页在 IO 线程上按需调用。
+     *
+     * 找到 rootfs 里的 clang 就登记 —— 优先级低于普通工具链（能直接跑的更省事），
+     * 所以调用方应该**先** [scan]，扫描没结果再调这个。
+     */
+    fun scanChroot(shell: ShellChannel?, rootfsMount: String, sysroot: File?): NativeToolchain? {
+        if (shell == null || !shell.available()) return null
+        val rootFs = RootFs(File(rootfsMount), shell)
+        if (!rootFs.hasClang()) return null
+        val chain = ChrootClangToolchain(rootFs, shell, sysroot)
+        register(chain)
+        return chain
+    }
+
+    /**
      * 在一个目录里找工具链。
      *
      * 认两种布局：

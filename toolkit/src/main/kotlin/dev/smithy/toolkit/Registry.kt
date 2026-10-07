@@ -39,6 +39,8 @@ import dev.smithy.toolkit.tools.ModuleUninstallTool
 import dev.smithy.toolkit.tools.ModuleWriteTextTool
 import dev.smithy.toolkit.tools.ComponentInstallTool
 import dev.smithy.toolkit.tools.ComponentListTool
+import dev.smithy.toolkit.tools.RootfsExecTool
+import dev.smithy.toolkit.tools.RootfsSetupTool
 import dev.smithy.toolkit.tools.ModuleBuildTool
 import dev.smithy.toolkit.tools.NativeToolchainTool
 import dev.smithy.toolkit.tools.ElfInspectTool
@@ -250,6 +252,8 @@ fun defaultTools(): List<Tool> = listOf(
     // 没有工具链时工具会明确说缺什么（而不是让模型反复重试同一个调用）
     NativeToolchainTool, ModuleBuildTool,
     ComponentListTool, ComponentInstallTool,
+    // rootfs 这条路：在 Alpine 里装工具、在里面跑命令（都要 root，exec 会改设备所以是 D）
+    RootfsSetupTool, RootfsExecTool,
     // so 的字节层：只做等长替换，变长与「被按内容索引的节」一律拒绝
     ElfInspectTool, ElfStringsTool, ElfPatchStringTool,
 )

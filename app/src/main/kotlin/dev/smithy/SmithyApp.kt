@@ -3,11 +3,13 @@ package dev.smithy
 import android.app.Application
 import dev.smithy.engine.ModuleChannels
 import dev.smithy.feature.apk.InstallChannelRegistry
+import dev.smithy.feature.apk.LibsuRootChannel
 import dev.smithy.feature.apk.install.AndroidInstallChannel
 import dev.smithy.feature.files.AndroidModuleChannel
 import dev.smithy.fs.AddOnHost
 import dev.smithy.fs.AddOnManager
 import dev.smithy.fs.NativeToolchains
+import dev.smithy.fs.ShellChannels
 import java.io.File
 
 class SmithyApp : Application() {
@@ -22,6 +24,10 @@ class SmithyApp : Application() {
         // 注册表放在 core:engine 而不是 feature 里 —— 工具层（:toolkit）不依赖 feature 模块，
         // 放 feature 里 AI 就够不着，M6 会变成「有实现、没人能调」
         ModuleChannels.register(AndroidModuleChannel(this))
+
+        // 命令通道：rootfs 那条路要 chroot / mount / apk，只有 root 能做。实现在 :feature:apk
+        // （libsu），引擎与工具层只认 ShellChannel 这个接口。
+        ShellChannels.register(LibsuRootChannel())
 
         // 可选组件（rootfs / native 工具链……）装到私有目录：不用 root、随时能读写。
         // 装完顺手扫一遍工具链 —— 用户可能刚把一份传到手机上，也可能上次装过了。

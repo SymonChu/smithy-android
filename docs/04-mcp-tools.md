@@ -73,6 +73,8 @@
 | `module.build` | W | zip, abi=arm64-v8a, api=26, out?, flags? | 把模块 `jni/` 下的 C++ 源码编成 `zygisk/<abi>.so` 并写回**新** zip（原包不动）。**改完模块逻辑让它真生效的那一步** —— Magisk 只认 `zygisk/<abi>.so`，源码刷进去不会生效。需要工具链（M6-B 的下载项），没有时工具会说清缺什么 |
 | `component.list` | R | — | 可选组件（M5）：装没装、多大、装在哪个目录、要不要 root、许可，外加 native 工具链当前能不能用。**编 `.so` 之前先问它** |
 | `component.install` | W | id=\|file=, kind?, sha256?, strip? | 下载并安装一个可选组件（`id=rootfs-alpine` 走登记地址），或把手机本地的一份归档灌进去（`file=/sdcard/Download/bundle.zip`）。装完自动重扫工具链，能编就说能编 |
+| `rootfs.setup` | W | rootfs?, skipApk? | 把 Alpine rootfs 部署到可执行位置（`/data/local/tmp/smithy/rootfs`）、挂 `/proc` `/dev`、写 `resolv.conf`，再 `apk add clang`。**做完 `module.build` 就能在手机上编**，不用任何外部产物。要 root |
+| `rootfs.exec` | D | script, rootfs?, timeout? | 在一个已部署的 rootfs 里执行命令（chroot 进去）。装包、看版本、跑 CLI 都走它。要 root，会改设备，所以每次都让用户确认 |
 | `module.open` | W | path | 打开模块 zip 为工作区，返回 moduleWorkspaceId + 元数据摘要；`workspace.status` / `patch.*` / `fs.*` 对模块工作区同样可用 |
 | `module.inspect` | R | workspaceId | 用 `module.prop` 判定模块、用 `zygisk/*.so` 判定 Zygisk 模块；列脚本 / overlay / ABI 覆盖，并与设备 ABI 比对（缺当前 ABI 显式警告） |
 | `module.prop_get` | R | workspaceId | 结构化返回 id / name / version / versionCode / author / description，缺失字段显式标出 |

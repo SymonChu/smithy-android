@@ -18,6 +18,8 @@ import dev.smithy.fs.AddOnHost
 import dev.smithy.fs.AddOnKind
 import dev.smithy.fs.AddOnProgress
 import dev.smithy.fs.AddOnSpec
+import dev.smithy.fs.RootFs
+import dev.smithy.fs.ShellChannels
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -243,6 +245,79 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
     // ── native 编译 ─────────────────────────────────────────────
 
     // ── 可选组件（文档里的 M5「可选模块」）──────────────────────
+
+    /**
+     * 「准备编译环境」：把 rootfs 部署到可执行位置 → 挂 /proc、/dev → `apk add clang`
+     * → 登记 chroot 工具链。
+     *
+     * 这是**不依赖任何外部产物**就能在手机上编 .so 的路：Alpine 的 clang 是原生 aarch64 的，
+     * 而官方没有给 arm64 安卓的 clang（NDK 只有 x86_64/darwin/windows 宿主机版）。
+     *
+     * 每一步都留痕：这条链要 root、要 chroot、要网络，任一环断了，只报「失败」等于让人重来一遍。
+     */
+    fun prepareRootfsEnv() {
+        val mgr = AddOnHost.current()
+            ?: return message("这台设备上没登记可选组件的安装位置（App 启动时干这活）", isError = true)
+        val rootfsAddon = mgr.installed(AddOnCatalog.rootfsAlpine)
+            ?: return message("先装 Alpine rootfs（4MB，编译卡里有按钮）", isError = true)
+        val shell = ShellChannels.current()
+            ?: return message("没有可用的命令通道（App 启动时登记）", isError = true)
+        if (!shell.available()) {
+            return message(
+                "要 root：chroot 与 mount 只有 root 能调。在 Root 管理器里给 Smithy 放行后重试",
+                isError = true,
+            )
+        }
+
+        viewModelScope.launch {
+            val mount = RootFs.deployDirFor()
+            val rootFs = RootFs(File(mount), shell)
+            val failure = withContext(Dispatchers.IO) {
+                _state.update { it.copy(busy = "部署 rootfs 到 $mount …", message = null, isError = false) }
+                val deploy = rootFs.deploy(rootfsAddon.dir)
+                if (!deploy.ok) return@withContext "部署 rootfs 失败：\n${deploy.out.tailLines(8)}"
+
+                _state.update { it.copy(busy = "准备 chroot 环境（挂 /proc、/dev，写 resolv.conf）…") }
+                val prep = rootFs.prepare()
+                if (!prep.ok) {
+                    return@withContext "准备 chroot 环境失败（mount 多半被 SELinux 拦了）：\n${prep.out.tailLines(8)}"
+                }
+                if (rootFs.hasClang()) return@withContext null   // 上次装过了
+
+                _state.update { it.copy(busy = "在 rootfs 里装 clang（约 100–200MB，慢）…") }
+                val apk = rootFs.installClang()
+                if (!apk.ok) {
+                    return@withContext "apk 装 clang 失败：\n${apk.out.tailLines(8)}" +
+                        "\n（网络不通或镜像的 https 证书验不过都可能长这样）"
+                }
+                null
+            }
+            if (failure != null) {
+                return@launch _state.update {
+                    it.copy(busy = null, isError = true, message = "$failure\n改完再点一次会接着做")
+                }
+            }
+
+            val addonRoot = File(getApplication<Application>().filesDir, "addon")
+            val sysroot = File(addonRoot, "native-toolchain/sysroot")
+            val chain = NativeToolchains.scanChroot(shell, mount, sysroot.takeIf { it.isDirectory })
+            _state.update {
+                it.copy(
+                    busy = null,
+                    isError = chain == null,
+                    message = if (chain != null) {
+                        "编译环境就绪：走 chroot 里的 clang。要编 arm64 的 so 还需要 target sysroot" +
+                            "（native-toolchain/sysroot）"
+                    } else {
+                        "装完了，但没在 rootfs 里找到 clang —— 把上面那段输出发我"
+                    },
+                )
+            }
+        }
+    }
+
+    /** 只留最后几行：给用户看的是「出事那几句」，不是整段过程。 */
+    private fun String.tailLines(n: Int): String = lines().takeLast(n).joinToString("\n")
 
     /**
      * 装一个可选组件（下载 + 校验 + 解包）。
