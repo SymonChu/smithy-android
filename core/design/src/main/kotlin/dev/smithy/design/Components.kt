@@ -266,6 +266,32 @@ fun SmithyCard(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * 对话框标题的统一长相：图标 + 文字。
+ *
+ * 对话框是「突然盖住整屏」的东西，一个图标能让人在半秒内认出这是哪一类操作
+ * （属性 / 破坏性 / 连接），而纯文字标题得读一遍才知道。
+ *
+ * [tint] 默认跟随主色，破坏性对话框传 `error`。
+ */
+@Composable
+fun SmithyDialogTitle(
+    icon: ImageVector,
+    text: String,
+    tint: Color? = null,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = tint ?: MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.width(SmithySpacing.gap))
+        Text(text)
+    }
+}
+
+/**
  * 空态。
  *
  * 原先空目录就一行居中的灰字（「这个目录是空的」），加载中更糟 —— 直接把状态字符串

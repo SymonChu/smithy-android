@@ -17,6 +17,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
@@ -43,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.smithy.design.SmithyIcons
@@ -91,11 +93,39 @@ class MainActivity : ComponentActivity() {
             // 主题套在最外层：整棵界面树都从它取色板/字阶/圆角。
             // 之前一行主题代码都没有 —— 用的是 M3 内置默认浅色，系统切暗色时界面还是白的
             SmithyTheme {
-                SmithyRoot(
-                    incomingUri = incoming.value,
-                    onIncomingConsumed = { incoming.value = null },
-                    resumeTick = resumeTick.intValue,
+                // 启动淡入：冷启动时用户先看到的是窗口底色（themes.xml，Android 12+ 是
+                // 系统启动画面），Compose 首帧画出来那一刻如果整屏「啪」地出现，观感上
+                // 就是闪一下。给根节点一段 320ms 的淡入 + 极轻微放大，把
+                // 「静态启动画面 → 界面」这一段接起来。
+                // 幅度刻意压得很小（0.985 起步）：大了就变成「缩放动画」，那是展示页
+                // 的做法，工具类应用只需要「稳地出现」
+                var appeared by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) { appeared = true }
+                val launchAlpha by animateFloatAsState(
+                    targetValue = if (appeared) 1f else 0f,
+                    animationSpec = tween(SmithyMotion.Slow, easing = SmithyMotion.EaseEnter),
+                    label = "launchAlpha",
                 )
+                val launchScale by animateFloatAsState(
+                    targetValue = if (appeared) 1f else 0.985f,
+                    animationSpec = tween(SmithyMotion.Slow, easing = SmithyMotion.EaseEnter),
+                    label = "launchScale",
+                )
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            alpha = launchAlpha
+                            scaleX = launchScale
+                            scaleY = launchScale
+                        },
+                ) {
+                    SmithyRoot(
+                        incomingUri = incoming.value,
+                        onIncomingConsumed = { incoming.value = null },
+                        resumeTick = resumeTick.intValue,
+                    )
+                }
             }
         }
     }

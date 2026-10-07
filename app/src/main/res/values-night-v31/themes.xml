@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      暗色 + Android 12 以上的启动画面。
+
+      **这份必须单独存在**：`values-night` 里的 `Theme.Smithy` 父主题和这份不同
+      （Light → 普通），而资源匹配时版本限定符（v31）比夜间限定符更优先 ——
+      只留 `values-night` 的话，夜间的 Android 12+ 设备会落到 light 父主题上，
+      状态栏图标立刻按浅色方案画，在深底上就看不见了。两份都写，行为才确定。
+
+      图标和亮色那份用同一张自适应图标（深底 + 浅色图案），两套主题下都立得住。
+    -->
+    <style name="Theme.Smithy" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:windowSplashScreenBackground">@color/window_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+    </style>
+</resources>

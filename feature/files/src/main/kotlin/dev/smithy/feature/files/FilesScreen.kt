@@ -42,6 +42,7 @@ import dev.smithy.fs.humanTime
 import dev.smithy.fs.RenameRules
 import dev.smithy.fs.RenamePlan
 import dev.smithy.design.SmithyCard
+import dev.smithy.design.SmithyDialogTitle
 import dev.smithy.design.SmithyEmptyState
 import dev.smithy.design.SmithyIcons
 import dev.smithy.design.SmithyIconButton
@@ -1652,7 +1653,7 @@ private fun PropertiesDialog(
         onDismissRequest = onDismiss,
         shape = MaterialTheme.shapes.extraLarge,
         title = {
-            DialogTitle(icon = SmithyIcons.Info, text = "属性")
+            SmithyDialogTitle(icon = SmithyIcons.Info, text = "属性")
         },
         text = {
             Column(
@@ -1719,33 +1720,13 @@ private fun TextInputDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = MaterialTheme.shapes.extraLarge,
-        title = { DialogTitle(icon = SmithyIcons.Rename, text = title) },
+        title = { SmithyDialogTitle(icon = SmithyIcons.Rename, text = title) },
         text = {
             OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true)
         },
         confirmButton = { TextButton(onClick = { onConfirm(text) }) { Text("确定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
-}
-
-/**
- * 对话框标题的统一长相：图标 + 文字。
- *
- * 对话框是「突然盖住整屏」的东西，一个图标能让人在半秒内认出这是哪一类操作
- * （属性 / 破坏性 / 连接），而纯文字标题得读一遍才知道。
- */
-@Composable
-private fun DialogTitle(icon: ImageVector, text: String, tint: Color? = null) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = tint ?: MaterialTheme.colorScheme.primary,
-        )
-        Spacer(Modifier.width(SmithySpacing.gap))
-        Text(text)
-    }
 }
 
 /**
@@ -1767,7 +1748,7 @@ private fun ConfirmDialog(
         onDismissRequest = onDismiss,
         shape = MaterialTheme.shapes.extraLarge,
         title = {
-            DialogTitle(
+            SmithyDialogTitle(
                 icon = if (destructive) SmithyIcons.Warning else SmithyIcons.Info,
                 text = title,
                 tint = if (destructive) MaterialTheme.colorScheme.error else null,
@@ -2295,7 +2276,7 @@ private fun FtpDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = MaterialTheme.shapes.extraLarge,
-        title = { DialogTitle(icon = SmithyIcons.Lan, text = "连接 FTP") },
+        title = { SmithyDialogTitle(icon = SmithyIcons.Lan, text = "连接 FTP") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(

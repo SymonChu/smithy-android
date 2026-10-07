@@ -1,62 +1,64 @@
 package dev.smithy.fs
 
 /**
- * 文件类型 → 图标/颜色的分类。
+ * 文件类型 → 分类。
  *
  * 放在 core:fs 而不是 feature 层：搜索结果（SearchHits）、压缩包条目、
- * 模块文件树都要用同一套图标语义，分类只认扩展名，不依赖任何 Android API。
+ * 模块文件树都要用同一套分类，而分类只认扩展名，不依赖任何 Android API。
  *
- * 之前只有 📁/📄 两种，APK/PDF/图片全都长一个样 —— 文件管理器里
- * 「扫一眼找到那张图/那个安装包」是最频繁的操作，图标是最快的索引。
+ * **这里只有「是什么」，没有「长什么样」**：原先每个枚举值挂着一个 emoji
+ * （📁📦🗜…）当图标，那是表现层的东西长在了纯数据模块里 —— 最后的结果就是
+ * 16 个跨 ROM 字形不一致、颜色跳脱、还没法跟着主题着色的 emoji。
+ * 现在图标在 `feature/files` 的 FileKindVisual 里（矢量、单色、按语义着色）。
  */
-enum class FileKind(val emoji: String) {
+enum class FileKind {
     /** 目录。 */
-    DIR("📁"),
+    DIR,
 
     /** 安装包：apk / xapk / apks。 */
-    APK("📦"),
+    APK,
 
-    /** 压缩归档：zip / jar / tar 系 / 7z / rar（能开与否是另一回事，图标先说清是什么）。 */
-    ARCHIVE("🗜"),
+    /** 压缩归档：zip / jar / tar 系 / 7z / rar（能开与否是另一回事，类型先说清是什么）。 */
+    ARCHIVE,
 
     /** 磁盘镜像 / 系统镜像。 */
-    IMAGE_DISK("💾"),
+    IMAGE_DISK,
 
     /** PDF。 */
-    PDF("📕"),
+    PDF,
 
     /** 文档：doc / ppt / xls / txt 的办公族。 */
-    DOC("📘"),
+    DOC,
 
     /** 电子书。 */
-    BOOK("📗"),
+    BOOK,
 
     /** 图片。 */
-    PICTURE("🖼"),
+    PICTURE,
 
     /** 音频。 */
-    AUDIO("🎵"),
+    AUDIO,
 
     /** 视频。 */
-    VIDEO("🎬"),
+    VIDEO,
 
     /** 字体。 */
-    FONT("🔤"),
+    FONT,
 
     /** 代码 / 脚本 / 配置（文本可编辑的那批）。 */
-    CODE("📜"),
+    CODE,
 
     /** Magisk 模块的 prop 与脚本同属配置，但 module.prop 值得单独认出来。 */
-    MODULE("🧩"),
+    MODULE,
 
     /** 可执行 / 二进制（so / dex / bin / elf）。 */
-    BINARY("⚙️"),
+    BINARY,
 
     /** 数据库。 */
-    DATABASE("🗃"),
+    DATABASE,
 
     /** 上面都不认的兜底。 */
-    OTHER("📄");
+    OTHER;
 
     companion object {
         /** 按文件名判类型。目录直接给 DIR，其余按扩展名查表。 */

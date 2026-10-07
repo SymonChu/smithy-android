@@ -1,10 +1,18 @@
 package dev.smithy.feature.chat
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,11 +33,19 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import dev.smithy.design.SmithyMono
 import dev.smithy.design.SmithySpacing
+import dev.smithy.design.SmithyEmptyState
+import dev.smithy.design.SmithyIconButton
+import dev.smithy.design.SmithyIcons
+import dev.smithy.design.SmithyMotion
+import dev.smithy.design.SmithyNumeric
+import dev.smithy.design.SmithyRowMeta
+import dev.smithy.design.rememberSmithyHaptics
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,10 +56,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
 /**
@@ -75,51 +93,100 @@ fun ChatScreen(
         TopBar(workspaceName, state.running, state.trustWrites, onAttach, onClear)
 
         if (state.items.isEmpty()) {
-            EmptyHint(workspaceName != null)
+            EmptyHint(workspaceName != null, onPick = onInput)
         }
 
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(
+                horizontal = SmithySpacing.gutter,
+                vertical = SmithySpacing.gap,
+            ),
+            verticalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
         ) {
             items(state.items, key = { it.id }) { item -> Item(item) }
         }
 
-        state.pendingConfirm?.let { request ->
-            val destructive = state.items.filterIsInstance<ChatItem.Confirm>()
-                .lastOrNull()?.destructive ?: false
-            ConfirmBar(request.toolName, request.summary, destructive, onConfirm)
+        // 确认条出现/消失都走展开动画：它是**门控**（不答就不往下走），
+        // 突然盖在输入栏上会让人以为界面卡住了
+        AnimatedVisibility(
+            visible = state.pendingConfirm != null,
+            enter = expandVertically(SmithyMotion.enter()) + fadeIn(SmithyMotion.enter()),
+            exit = shrinkVertically(SmithyMotion.exit()) + fadeOut(SmithyMotion.exit()),
+        ) {
+            state.pendingConfirm?.let { request ->
+                val destructive = state.items.filterIsInstance<ChatItem.Confirm>()
+                    .lastOrNull()?.destructive ?: false
+                ConfirmBar(request.toolName, request.summary, destructive, onConfirm)
+            }
         }
 
         (state.message ?: state.busy)?.let { text ->
-            Surface(
-                color = if (state.isError) {
-                    MaterialTheme.colorScheme.errorContainer
-                } else {
-                    MaterialTheme.colorScheme.secondaryContainer
-                },
-            ) {
-                Text(
-                    text,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.fillMaxWidth().padding(10.dp),
-                )
-            }
+            StatusStrip(
+                text = text,
+                isError = state.isError,
+                icon = if (state.isError) SmithyIcons.Warning else SmithyIcons.Run,
+            )
         }
 
         state.configProblem?.let {
-            Surface(color = MaterialTheme.colorScheme.errorContainer) {
-                Text(
-                    "AI 还没配好：$it（到「设置」填）",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.fillMaxWidth().padding(10.dp),
-                )
-            }
+            StatusStrip(
+                text = "AI 还没配好：$it（到「设置」填）",
+                isError = true,
+                icon = SmithyIcons.Warning,
+            )
         }
 
         InputBar(state.input, state.running, onInput, onSend, onStop)
+    }
+}
+
+/**
+ * 一行状态条（忙碌 / 提示 / 配置问题）。
+ *
+ * 这三处在原来各写一遍 `Surface + Text`，底色不同、都没有图标 —— 而暗色下
+ * 浅红和浅灰几乎分不出来，「出错了」和「在跑」看起来一样。统一成一个形状：
+ * 有图标、有圆角、左右留白和列表对齐（原来贴边，看起来像被裁掉了）。
+ */
+@Composable
+private fun StatusStrip(text: String, isError: Boolean, icon: ImageVector) {
+    Surface(
+        modifier = Modifier.padding(horizontal = SmithySpacing.gap, vertical = 4.dp),
+        color = if (isError) {
+            MaterialTheme.colorScheme.errorContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Row(
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gap + 2.dp, vertical = SmithySpacing.gap),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = if (isError) {
+                    MaterialTheme.colorScheme.onErrorContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Spacer(Modifier.width(SmithySpacing.gap))
+            Text(
+                text,
+                style = SmithyRowMeta,
+                color = if (isError) {
+                    MaterialTheme.colorScheme.onErrorContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
@@ -131,7 +198,7 @@ private fun TopBar(
     onAttach: () -> Unit,
     onClear: () -> Unit,
 ) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
             verticalAlignment = Alignment.CenterVertically,
@@ -151,9 +218,21 @@ private fun TopBar(
                     Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        if (workspaceName == null) "⚠" else "📦",
-                        style = MaterialTheme.typography.bodyMedium,
+                    // ⚠ / 📦 两个 emoji 换成矢量图标：emoji 在深色底上是彩的、大小还不一致，
+                    // 而且它没法跟着 errorContainer 的语义色走
+                    Icon(
+                        imageVector = if (workspaceName == null) {
+                            SmithyIcons.Warning
+                        } else {
+                            SmithyIcons.Package
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = if (workspaceName == null) {
+                            MaterialTheme.colorScheme.onErrorContainer
+                        } else {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        },
                     )
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
@@ -173,7 +252,7 @@ private fun TopBar(
                                 append(if (workspaceName == null) "先去工作台选一个" else "已绑定")
                                 if (trustWrites) append("  ·  信任模式：写入不问")
                             },
-                            style = MaterialTheme.typography.labelSmall,
+                            style = SmithyRowMeta,
                             color = if (workspaceName == null) {
                                 MaterialTheme.colorScheme.onErrorContainer
                             } else {
@@ -186,36 +265,71 @@ private fun TopBar(
                     }
                 }
             }
-            Spacer(Modifier.width(6.dp))
-            TextButton(onClick = onAttach) { Text(if (workspaceName == null) "选包" else "换包") }
-            TextButton(onClick = onClear) { Text("清空") }
+            Spacer(Modifier.width(SmithySpacing.gap))
+            // 「选包 / 清空」收成图标：这两个动作的含义足够强，而绑定卡才是这一行的主角，
+            // 两个文字按钮会把它的宽度挤掉
+            SmithyIconButton(
+                icon = SmithyIcons.Attach,
+                contentDescription = if (workspaceName == null) "选包" else "换包",
+                onClick = onAttach,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            SmithyIconButton(
+                icon = SmithyIcons.ClearAll,
+                contentDescription = "清空对话",
+                onClick = onClear,
+            )
         }
     }
 }
 
 @Composable
-private fun EmptyHint(hasWorkspace: Boolean) {
-    Column(Modifier.fillMaxWidth().padding(24.dp)) {
-        Text("试着说一句：", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(6.dp))
-        listOf(
-            "把这个包的应用名改成「我的应用」，版本改成 2.0",
-            "把「工作台」这个文案改成「操作台」",
-            "看看这个包有哪些权限，有没有危险的",
-        ).forEach {
-            Text("· $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(4.dp))
+private fun EmptyHint(hasWorkspace: Boolean, onPick: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(SmithySpacing.gutter)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = SmithyIcons.Chat,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(SmithySpacing.gap))
+            Text("试着说一句", style = MaterialTheme.typography.titleMedium)
+        }
+        Spacer(Modifier.height(SmithySpacing.gap))
+        // 例子做成**可点的药丸**：这几句话是可以照抄的指令，能点就不用手打；
+        // 原来它们是一串带「·」的灰字，看着像说明文档而不像可用的入口
+        EXAMPLE_PROMPTS.forEach { example ->
+            Surface(
+                onClick = { onPick(example) },
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth().padding(bottom = SmithySpacing.gap),
+            ) {
+                Text(
+                    example,
+                    Modifier.padding(horizontal = 12.dp, vertical = SmithySpacing.gap),
+                    style = SmithyRowMeta,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
         if (!hasWorkspace) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "（改包之前要先在工作台打开一个 APK —— 否则我只能聊天，看不到包内容）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+            StatusStrip(
+                text = "改包之前要先在工作台打开一个 APK —— 否则我只能聊天，看不到包内容",
+                isError = true,
+                icon = SmithyIcons.Warning,
             )
         }
     }
 }
+
+/** 空对话时给的示例指令。写成可以直接点进输入框的整句，而不是关键词。 */
+private val EXAMPLE_PROMPTS = listOf(
+    "把这个包的应用名改成「我的应用」，版本改成 2.0",
+    "把「工作台」这个文案改成「操作台」",
+    "看看这个包有哪些权限，有没有危险的",
+)
 
 @Composable
 private fun Item(item: ChatItem) = when (item) {
@@ -285,11 +399,32 @@ private fun AssistantBubble(item: ChatItem.Assistant) {
                 }
             }
             if (collapsible) {
-                TextButton(onClick = { expanded = !expanded }) {
-                    Text(
-                        if (expanded) "收起" else "展开全部（$lines 行）",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
+                // 展开/收起用药丸：TextButton 的默认内边距让这一行显得比正文还重，
+                // 而它只是「这条太长，要不要看全」的附属操作
+                Surface(
+                    onClick = { expanded = !expanded },
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = RoundedCornerShape(99.dp),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = SmithyIcons.ChevronRight,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(14.dp)
+                                .rotate(if (expanded) -90f else 90f),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (expanded) "收起" else "展开全部（$lines 行）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -305,6 +440,7 @@ private fun AssistantBubble(item: ChatItem.Assistant) {
 @Composable
 private fun ToolCard(item: ChatItem.Tool) {
     var expanded by remember { mutableStateOf(false) }
+    val haptics = rememberSmithyHaptics()
     val failed = item.state == ChatItem.Tool.State.FAILED
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -313,42 +449,60 @@ private fun ToolCard(item: ChatItem.Tool) {
             1.dp,
             if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant,
         ),
-        modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+        modifier = Modifier.fillMaxWidth().clickable {
+            haptics.tap()
+            expanded = !expanded
+        },
     ) {
         Column {
             // 表头块：和正文有底色差，一眼分得清「这是工具调用不是 AI 说的话」
-            Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+            Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    Modifier.fillMaxWidth()
+                        .padding(horizontal = SmithySpacing.gap + 4.dp, vertical = SmithySpacing.gap),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        when (item.state) {
-                            ChatItem.Tool.State.RUNNING -> "⏳"
-                            ChatItem.Tool.State.OK -> "✓"
-                            ChatItem.Tool.State.FAILED -> "✗"
+                    // ⏳ ✓ ✗ 三个字符换成图标：字符的字形、粗细、垂直位置都跟着系统字体走，
+                    // 三种状态在一列里对不齐；图标还能跟着状态色走
+                    Icon(
+                        imageVector = when (item.state) {
+                            ChatItem.Tool.State.RUNNING -> SmithyIcons.Run
+                            ChatItem.Tool.State.OK -> SmithyIcons.Check
+                            ChatItem.Tool.State.FAILED -> SmithyIcons.Warning
                         },
-                        color = if (failed) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.primary
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = when {
+                            failed -> MaterialTheme.colorScheme.error
+                            item.state == ChatItem.Tool.State.RUNNING ->
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else -> MaterialTheme.colorScheme.primary
                         },
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(SmithySpacing.gap))
                     Text(
                         item.name,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontFamily = FontFamily.Monospace,
+                        style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                     )
-                    Text(
-                        if (expanded) "收起" else "参数",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // 展开态靠箭头方向表示，不再多写「收起/参数」两个词
+                    Icon(
+                        imageVector = SmithyIcons.ChevronRight,
+                        contentDescription = if (expanded) "收起参数" else "展开参数",
+                        modifier = Modifier
+                            .size(16.dp)
+                            .rotate(if (expanded) 90f else 0f),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Column(
+                Modifier.padding(
+                    horizontal = SmithySpacing.gap + 4.dp,
+                    vertical = SmithySpacing.rowVertical,
+                ),
+            ) {
             item.summary?.takeIf { it.isNotBlank() }?.let {
                 Text(
                     it,
@@ -396,16 +550,33 @@ private fun ToolCard(item: ChatItem.Tool) {
 
 @Composable
 private fun NoticeRow(item: ChatItem.Notice) {
-    Text(
-        item.text,
-        style = MaterialTheme.typography.bodySmall,
-        color = if (item.isError) {
-            MaterialTheme.colorScheme.error
-        } else {
-            MaterialTheme.colorScheme.onSurfaceVariant
-        },
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-    )
+    // 给通知一个图标：不然「这一步没做成」和「顺手说一句」在视觉上完全一样
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = if (item.isError) SmithyIcons.Warning else SmithyIcons.Info,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = if (item.isError) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        Spacer(Modifier.width(SmithySpacing.gap - 2.dp))
+        Text(
+            item.text,
+            style = SmithyRowMeta,
+            color = if (item.isError) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.weight(1f),
+        )
+    }
 }
 
 /**
@@ -425,32 +596,76 @@ private fun ConfirmBar(
         color = if (destructive) {
             MaterialTheme.colorScheme.errorContainer
         } else {
-            MaterialTheme.colorScheme.secondaryContainer
+            MaterialTheme.colorScheme.surfaceContainerHigh
         },
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.padding(horizontal = SmithySpacing.gap),
     ) {
-        Column(Modifier.fillMaxWidth().padding(12.dp)) {
-            Text(
-                if (destructive) "⚠ 这个操作不可撤销，要执行吗" else "要执行这个操作吗",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
+        Column(Modifier.fillMaxWidth().padding(SmithySpacing.cardPadding)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (destructive) SmithyIcons.Warning else SmithyIcons.Info,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = if (destructive) {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                )
+                Spacer(Modifier.width(SmithySpacing.gap))
+                Text(
+                    if (destructive) "这个操作不可撤销，要执行吗" else "要执行这个操作吗",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (destructive) {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 "$toolName：$summary",
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
+                style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+                color = if (destructive) {
+                    MaterialTheme.colorScheme.onErrorContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
             )
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.height(SmithySpacing.gap + 2.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
+                // 「允许」带确认触感、「拒绝」带警示触感：这是门控，答错了代价最大，
+                // 手指在点之前就该有点感觉
+                val haptics = rememberSmithyHaptics()
                 Button(
-                    onClick = { onAnswer(true) },
+                    onClick = {
+                        haptics.confirm()
+                        onAnswer(true)
+                    },
                     colors = if (destructive) {
-                        ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                        )
                     } else {
                         ButtonDefaults.buttonColors()
                     },
-                ) { Text("允许") }
-                OutlinedButton(onClick = { onAnswer(false) }) { Text("拒绝") }
+                ) {
+                    Icon(SmithyIcons.Check, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("允许")
+                }
+                OutlinedButton(onClick = {
+                    haptics.warn()
+                    onAnswer(false)
+                }) {
+                    Icon(SmithyIcons.Close, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("拒绝")
+                }
             }
         }
     }
@@ -471,15 +686,16 @@ private fun InputBar(
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
+    val haptics = rememberSmithyHaptics()
+    Surface(color = MaterialTheme.colorScheme.background) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gap + 2.dp, vertical = SmithySpacing.gap),
             verticalAlignment = Alignment.Bottom,
         ) {
             Surface(
-                color = MaterialTheme.colorScheme.surfaceContainer,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 shape = RoundedCornerShape(22.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.weight(1f),
             ) {
                 OutlinedTextField(
@@ -495,25 +711,31 @@ private fun InputBar(
                     ),
                 )
             }
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(SmithySpacing.gap))
             if (running) {
                 FilledIconButton(
-                    onClick = onStop,
+                    onClick = {
+                        haptics.warn()
+                        onStop()
+                    },
                     modifier = Modifier.size(48.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.error,
                         contentColor = MaterialTheme.colorScheme.onError,
                     ),
                 ) {
-                    Text("■", style = MaterialTheme.typography.labelLarge)
+                    Icon(SmithyIcons.Stop, "停止", Modifier.size(22.dp))
                 }
             } else {
                 FilledIconButton(
-                    onClick = onSend,
+                    onClick = {
+                        haptics.tap()
+                        onSend()
+                    },
                     enabled = input.isNotBlank(),
                     modifier = Modifier.size(48.dp),
                 ) {
-                    Text("➤", style = MaterialTheme.typography.labelLarge)
+                    Icon(SmithyIcons.Send, "发送", Modifier.size(20.dp))
                 }
             }
         }

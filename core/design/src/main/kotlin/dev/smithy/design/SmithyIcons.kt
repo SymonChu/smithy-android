@@ -130,6 +130,16 @@ object SmithyIcons {
         "M440-160v-487L216-423l-56-57 320-320 320 320-56 57-224-224v487h-80Z",
     ) }
 
+    /** 下一窗 / 向下 */
+    val Down: ImageVector by lazy { smithyIcon("Down",
+        "M440-800v487L216-537l-56 57 320 320 320-320-56-57-224 224v-487h-80Z",
+    ) }
+
+    /** 上一窗 / 上一层 */
+    val ChevronLeft: ImageVector by lazy { smithyIcon("ChevronLeft",
+        "M560-240 320-480l240-240 56 56-184 184 184 184-56 56Z",
+    ) }
+
     /** 进入/更多 */
     val ChevronRight: ImageVector by lazy { smithyIcon("ChevronRight",
         "M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z",
@@ -377,6 +387,7 @@ object SmithyIcons {
             "Attach" to Attach,
             "Chat" to Chat,
             "Check" to Check,
+            "ChevronLeft" to ChevronLeft,
             "ChevronRight" to ChevronRight,
             "ClearAll" to ClearAll,
             "Close" to Close,
@@ -385,6 +396,7 @@ object SmithyIcons {
             "Dashboard" to Dashboard,
             "Delete" to Delete,
             "Deselect" to Deselect,
+            "Down" to Down,
             "Download" to Download,
             "Files" to Files,
             "Hex" to Hex,

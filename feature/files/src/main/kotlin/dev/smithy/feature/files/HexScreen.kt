@@ -12,10 +12,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import dev.smithy.design.SmithySpacing
+import dev.smithy.design.SmithyDialogTitle
+import dev.smithy.design.SmithyIconButton
+import dev.smithy.design.SmithyIcons
+import dev.smithy.design.SmithyMono
+import dev.smithy.design.SmithyRowMeta
+import dev.smithy.design.SmithyTopBar
+import dev.smithy.design.rememberSmithyHaptics
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -23,8 +33,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -56,46 +69,70 @@ fun HexScreen(
     val perRow = if (LocalConfiguration.current.screenWidthDp < 400) 8 else 16
 
     Column(modifier.fillMaxSize()) {
-        Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("十六进制", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    state.path,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                )
-                TextButton(onClick = onClose) { Text("关闭") }
-            }
-        }
+        // 顶栏和其它整屏页面统一：返回图标代替「关闭」文字按钮 ——
+        // 这一屏是「从文件列表点进来的」，返回才是它真实的关系
+        SmithyTopBar(
+            title = "十六进制",
+            subtitle = state.path,
+            onBack = onClose,
+        )
 
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth()
+                .padding(horizontal = SmithySpacing.gutter, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
         ) {
-            OutlinedTextField(
+            TextField(
                 value = gotoText,
                 onValueChange = { gotoText = it },
-                modifier = Modifier.width(120.dp),
+                modifier = Modifier.width(132.dp),
                 singleLine = true,
-                label = { Text("偏移(hex)") },
+                placeholder = { Text("偏移(hex)") },
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                shape = MaterialTheme.shapes.small,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                ),
             )
-            TextButton(onClick = { onGoto(gotoText) }) { Text("跳转") }
-            TextButton(enabled = state.hasPrev, onClick = { onPage(-1) }) { Text("上一窗") }
-            TextButton(enabled = state.hasNext, onClick = { onPage(1) }) { Text("下一窗") }
+            // 「跳转 / 上一窗 / 下一窗」换成三个图标：这一行本来就窄，
+            // 三个文字按钮会把偏移输入框挤到只剩几个字符
+            val haptics = rememberSmithyHaptics()
+            SmithyIconButton(
+                icon = SmithyIcons.Search,
+                contentDescription = "跳到偏移",
+                onClick = {
+                    haptics.tap()
+                    onGoto(gotoText)
+                },
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            SmithyIconButton(
+                icon = SmithyIcons.Up,
+                contentDescription = "上一窗",
+                onClick = { onPage(-1) },
+                enabled = state.hasPrev,
+            )
+            SmithyIconButton(
+                icon = SmithyIcons.Down,
+                contentDescription = "下一窗",
+                onClick = { onPage(1) },
+                enabled = state.hasNext,
+            )
         }
 
         Text(
             "${HexEdit.formatOffset(state.windowStart)} – ${HexEdit.formatOffset(state.windowEnd)}" +
                 "  /  ${humanSize(state.size)}",
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.padding(horizontal = 12.dp),
+            style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(
+                horizontal = SmithySpacing.gutter,
+                vertical = 2.dp,
+            ),
         )
 
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
@@ -161,7 +198,8 @@ private fun WriteHexDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("写字节") },
+        shape = MaterialTheme.shapes.extraLarge,
+        title = { SmithyDialogTitle(icon = SmithyIcons.Hex, text = "写字节") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(

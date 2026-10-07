@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Android 12+ 的系统启动画面（SplashScreen）。
+
+      不引 `androidx.core:core-splashscreen`：API 31 起系统原生就有这个能力，
+      而这里要的只有两件事 —— 底色和图标。多一个依赖不划算（minSdk 26 的老设备
+      本来也没有系统启动画面，它们看到的是 @color/window_background）。
+
+      **底色要显式写**：不写的话系统会从别处推一个底（不同 ROM 推出来的还不一样），
+      和界面的 surface 色对不上，启动画面到首帧之间会看到一次换色。
+
+      **图标用 `@mipmap/ic_launcher` 而不是 `@drawable/ic_launcher_foreground`**：
+      前景矢量是接近白的 #E8E8EA，单独放在浅色启动底上几乎看不见；自适应图标自带
+      深色背景层（#1B1B1F），两套主题下都立得住。
+    -->
+    <style name="Theme.Smithy" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:windowSplashScreenBackground">@color/window_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+    </style>
+</resources>

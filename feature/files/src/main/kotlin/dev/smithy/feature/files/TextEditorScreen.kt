@@ -10,9 +10,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import dev.smithy.design.SmithySpacing
+import dev.smithy.design.SmithyIconButton
+import dev.smithy.design.SmithyIcons
+import dev.smithy.design.SmithyMono
+import dev.smithy.design.SmithyRowMeta
+import dev.smithy.design.rememberSmithyHaptics
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,23 +63,35 @@ internal fun TextEditorScreen(
     }
 
     Column(modifier.fillMaxSize()) {
-        Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = SmithySpacing.gutter, vertical = SmithySpacing.barVertical),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.End,
             ) {
+                // 「取消」从文字按钮收成 ✕ 图标：编辑器的顶栏越短，正文可视区越大，
+                // 而「离开这个编辑器」的语义有叉号就够
+                SmithyIconButton(
+                    icon = SmithyIcons.Close,
+                    contentDescription = "取消编辑",
+                    onClick = onCancel,
+                )
+                Spacer(Modifier.width(SmithySpacing.gap - 4.dp))
                 Text(
                     path,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
+                    style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+                    color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
-                    maxLines = 2,
+                    maxLines = 1,
                 )
-                Spacer(Modifier.width(6.dp))
-                TextButton(onClick = onCancel) { Text("取消") }
-                Spacer(Modifier.width(4.dp))
-                Button(onClick = { holder.editor?.text?.toString()?.let(onSave) }) {
+                Spacer(Modifier.width(SmithySpacing.gap))
+                val haptics = rememberSmithyHaptics()
+                // 保存是这个界面唯一的出口动作，它得是最显眼的一个（其它两个都是图标）
+                Button(onClick = {
+                    haptics.confirm()
+                    holder.editor?.text?.toString()?.let(onSave)
+                }) {
+                    Icon(SmithyIcons.Save, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text("保存")
                 }
             }
