@@ -157,6 +157,14 @@
 
 改模块逻辑的唯一正当路径是**改源码重编**，不是二进制硬改。
 
+> **当前状态（部分落地）**：模块骨架已经能生成了 —— `module.create` / 模块页的「新建模块」
+> （`core:fs` 的 `ModuleScaffold`）：`module.prop` + `service.sh` + `post-fs-data.sh` +
+> `system.prop`，结构约束（id 合法性、条目在根上、脚本）一次钉对，**shell 档刷入即生效**。
+> `flavour=zygisk` 会多给 `jni/`（`module.cpp` + `CMakeLists.txt` + `build.sh` + 说明），
+> 但**没有编译链**：`zygisk/<abi>.so` 得在外面编好放进去（骨架刻意不放占位 so ——
+> 放一个会让「装上了但没生效」变得极难排查）。下面第 1 条（clang + sysroot 的构建模块）
+> 与第 5 条（分发 `zygisk.hpp`）仍未做。
+
 **任务**
 1. 以 M5 的「构建模块」为底座，追加 `clang` + Android `sysroot` + `libc++`（约 300-400MB，按需下载，不进主包）
 2. 附 Zygisk 模块骨架模板：`module.prop` + `CMakeLists.txt` + `zygisk.hpp`（0BSD）+ 最小 `ModuleBase` 实现

@@ -68,6 +68,7 @@
 
 | 工具 | Effect | 参数 | 说明 |
 |---|---|---|---|
+| `module.create` | W | dir, id, name?, version?, versionCode?, author?, description?, flavour=shell\|zygisk | **从零建一个模块骨架**（其余模块工具都要求先有一个 zip）。`module.prop` / `service.sh` / `post-fs-data.sh` / `system.prop` 按规范摆好，条目在根上。`flavour=shell` 刷入即生效；`flavour=zygisk` 只给 `jni/` 下的 native 源码（`.so` 要自己编，见 M6-B），不会放占位的 so |
 | `module.open` | W | path | 打开模块 zip 为工作区，返回 moduleWorkspaceId + 元数据摘要；`workspace.status` / `patch.*` / `fs.*` 对模块工作区同样可用 |
 | `module.inspect` | R | workspaceId | 用 `module.prop` 判定模块、用 `zygisk/*.so` 判定 Zygisk 模块；列脚本 / overlay / ABI 覆盖，并与设备 ABI 比对（缺当前 ABI 显式警告） |
 | `module.prop_get` | R | workspaceId | 结构化返回 id / name / version / versionCode / author / description，缺失字段显式标出 |

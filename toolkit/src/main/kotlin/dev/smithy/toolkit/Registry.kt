@@ -25,6 +25,7 @@ import dev.smithy.toolkit.tools.EntryListTool
 import dev.smithy.toolkit.tools.EntryReadTool
 import dev.smithy.toolkit.tools.EntryWriteTool
 import dev.smithy.toolkit.tools.JadxDecompileTool
+import dev.smithy.toolkit.tools.ModuleCreateTool
 import dev.smithy.toolkit.tools.ModuleDeleteEntryTool
 import dev.smithy.toolkit.tools.ModuleInspectTool
 import dev.smithy.toolkit.tools.ModuleInstallTool
@@ -235,7 +236,8 @@ fun defaultTools(): List<Tool> = listOf(
     // 打包链路
     ApkRebuildTool, ApkSignTool, ApkVerifyTool, ApkInstallTool,
     // 模块（Magisk / Zygisk）：改包之外的另一种包。按路径操作，不占用 apk 工作区
-    ModuleInspectTool, ModuleReadTextTool, ModuleWriteTextTool, ModuleSetPropTool,
+    // module.create 是「从零做一个模块」的起点（其余工具都要求先有一个模块 zip）
+    ModuleCreateTool, ModuleInspectTool, ModuleReadTextTool, ModuleWriteTextTool, ModuleSetPropTool,
     ModuleDeleteEntryTool,
     // 模块的设备操作：只有 Root 一档能做到，通道由 App 层注册
     ModuleListInstalledTool, ModuleInstallTool, ModuleSetEnabledTool, ModuleRemoveTool,

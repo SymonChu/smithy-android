@@ -4,6 +4,8 @@ import kotlinx.serialization.json.JsonObject
 import dev.smithy.engine.ModuleChannels
 import dev.smithy.fs.ModuleProject
 import dev.smithy.fs.ModuleProp
+import dev.smithy.fs.ModuleScaffold
+import dev.smithy.fs.ModuleSkeletonSpec
 import dev.smithy.toolkit.ArgReader
 import dev.smithy.toolkit.Effect
 import dev.smithy.toolkit.Results
@@ -36,6 +38,107 @@ private fun notAModule(zip: File): ToolResult = Results.fail(
     "模块 zip 的条目要直接在根上（module.prop、zygisk/、service.sh），不能套一层目录。" +
         "如果这是个改包用的 apk，那该走改包那条线",
 )
+
+// ── 新建 ──────────────────────────────────────────────────────
+
+/**
+ * 从零建一个模块骨架。
+ *
+ * 这是「用 AI 给某个软件写一个模块」那条链的**第一步**：之前所有模块工具都要求
+ * 「先有一个模块 zip」，也就是说用户得在别处把 zip 结构拼对才能进来。骨架由
+ * [ModuleScaffold] 生成（结构约束那几条它已经钉死），模型拿到路径后接着用
+ * `module.write_text` / `module.set_prop` 往里填内容，最后 `module.install` 刷入。
+ *
+ * 两档的差别要说透，否则模型会给用户一个「刷进去没用」的东西：shell 档刷入即生效；
+ * zygisk 档只是 native 源码，`.so` 还得编（手机上要等构建模块）。
+ */
+object ModuleCreateTool : Tool {
+    override val spec = ToolSpec(
+        name = "module.create",
+        description = "新建一个 Magisk 模块骨架（zip）。**要给某个软件做模块就从这一步开始** —— " +
+            "module.prop、开机脚本、system.prop 都按 Magisk 的规范摆好了，位置也对（条目直接在根上），" +
+            "接着用 module.write_text 往里写真正要干的事。" +
+            "flavour=shell（默认）：纯脚本模块，刷入即生效，不需要任何编译链；" +
+            "flavour=zygisk：额外给 jni/ 下的 native 源码骨架，**源码不是能生效的模块**，" +
+            "要先把 arm64-v8a.so 编出来（手机上需要构建模块），骨架里不会放占位的 so。",
+        params = schema {
+            string("dir", "骨架 zip 放在哪个目录（一般就是当前工作区目录）", required = true)
+            string("id", "模块 id：只允许字母数字和 . _ -；它也是刷入后 /data/adb/modules/ 下的目录名", required = true)
+            string("name", "显示名称，不给就用 id")
+            string("version", "版本名，如 v1.0")
+            integer("versionCode", "版本号（整数，Magisk 用它比大小）")
+            string("author", "作者")
+            string("description", "描述：Magisk 模块列表里显示这一行，写清这个模块给谁用、做什么")
+            string("flavour", "shell（默认，纯脚本）或 zygisk（额外给 native 源码）")
+            string("out", "输出 zip 路径。不给就写成 <dir>/<id>.zip")
+        },
+        returns = "输出 zip 路径、条目清单、接下来该改哪个文件",
+        effect = Effect.WRITE,
+    )
+
+    override suspend fun invoke(ctx: ToolContext, args: JsonObject): ToolResult {
+        val a = ArgReader(args)
+        val dir = File(a.requireStr("dir", "给我一个目录，骨架 zip 放在那里"))
+        val id = a.requireStr("id", "给我模块 id（字母数字和 . _ -）")
+
+        val flavour = when (val raw = a.str("flavour")?.trim()?.lowercase()) {
+            null, "" , "shell" -> ModuleSkeletonSpec.Flavour.SHELL
+            "zygisk" -> ModuleSkeletonSpec.Flavour.ZYGISK
+            else -> return Results.fail(
+                "BAD_FLAVOUR",
+                "flavour 只认 shell 和 zygisk，收到「$raw」",
+                "纯脚本（改属性、开机跑命令、按包名动数据）用 shell；要往应用进程里注入代码才用 zygisk",
+            )
+        }
+
+        val out = a.str("out")?.let { File(it) } ?: File(dir, "$id.zip")
+        if (out.exists()) {
+            return Results.fail(
+                "EXISTS",
+                "${out.name} 已经存在了",
+                "换一个 id，或者给 out 指定别的路径 ——「新建」不该悄悄盖掉一个现有的模块",
+            )
+        }
+
+        val spec = ModuleSkeletonSpec(
+            id = id,
+            name = a.str("name") ?: id,
+            version = a.str("version") ?: "v1.0",
+            versionCode = a.int("versionCode", 1),
+            author = a.str("author").orEmpty(),
+            description = a.str("description").orEmpty(),
+            flavour = flavour,
+        )
+
+        return runCatching { ModuleScaffold.write(spec, out) }.fold(
+            onSuccess = { names ->
+                val next = if (flavour == ModuleSkeletonSpec.Flavour.ZYGISK) {
+                    "接着改 jni/module.cpp 里的 kTargetProcess（目标软件的进程名，一般就是包名），" +
+                        "然后把 zygisk.hpp 放进 jni/ 编出 zygisk/<abi>.so —— **在编出来之前这个包刷了也不会生效**"
+                } else {
+                    "接着用 module.write_text 改 service.sh —— 那里是模块真正干活的地方（每次开机执行一次）"
+                }
+                Results.ok(
+                    "已生成模块骨架：${out.absolutePath}\n" +
+                        "条目：${names.joinToString(", ")}\n$next",
+                    Results.json(
+                        "out" to out.absolutePath,
+                        "id" to id,
+                        "flavour" to flavour.name.lowercase(),
+                        "entries" to names,
+                    ),
+                )
+            },
+            onFailure = { e ->
+                Results.fail(
+                    "CREATE_FAILED",
+                    "建不了模块骨架：${e.message}",
+                    "id 只允许字母、数字和 . _ -（不能有空格、斜杠、中文）；versionCode 要是非负整数",
+                )
+            },
+        )
+    }
+}
 
 // ── 读取 ──────────────────────────────────────────────────────
 

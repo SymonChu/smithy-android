@@ -1,6 +1,7 @@
 package dev.smithy.toolkit
 
 import dev.smithy.engine.ApkProject
+import dev.smithy.fs.ModuleProject
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -202,5 +203,79 @@ class ModuleToolsTest {
 
         assertEquals("BAD_OFFSET", r.error?.code)
         assertTrue(r.error?.hint?.contains("十六进制") == true, "要说清偏移是十六进制的：${r.error?.hint}")
+    }
+
+    // ── 从零建一个模块 ──────────────────────────────────────
+
+    /** 每次给一个干净目录：module.create 拒绝覆盖已存在的包，复用目录会互相干扰。 */
+    private fun freshDir(): File =
+        File(System.getProperty("java.io.tmpdir"), "smithy-create-${System.nanoTime()}").apply { mkdirs() }
+
+    @Test
+    fun `新建模块给出一个结构正确的骨架`() {
+        val dir = freshDir()
+        val r = runBlocking {
+            defaultRegistry().invoke(
+                "module.create",
+                FakeContext(),
+                args("dir" to dir.path, "id" to "demo_mod", "name" to "演示", "description" to "给某个软件用"),
+            )
+        }
+
+        assertTrue(r.ok, "新建该成功：${r.error?.message}")
+        val zip = File(dir, "demo_mod.zip")
+        assertTrue(zip.exists(), "骨架要落在 <dir>/<id>.zip")
+        ModuleProject.open(zip).use { p ->
+            assertEquals("demo_mod", p.prop?.id, "module.prop 得能被模块解析认出来")
+            assertTrue("service.sh" in p.entryNames(), "接下来要填的是 service.sh")
+        }
+        // 结果里要说清下一步改哪个文件，否则模型建完就停在这里了
+        assertTrue(r.text?.contains("service.sh") == true, "要指出下一步：${r.text}")
+    }
+
+    @Test
+    fun `新建模块不覆盖已有的包`() {
+        val dir = freshDir()
+        val first = runBlocking {
+            defaultRegistry().invoke("module.create", FakeContext(), args("dir" to dir.path, "id" to "same_mod"))
+        }
+        assertTrue(first.ok, "第一次该成功：${first.error?.message}")
+
+        val firstBytes = File(dir, "same_mod.zip").readBytes()
+        val again = runBlocking {
+            defaultRegistry().invoke("module.create", FakeContext(), args("dir" to dir.path, "id" to "same_mod"))
+        }
+
+        assertEquals("EXISTS", again.error?.code, "「新建」不该悄悄盖掉一个现有的模块")
+        assertTrue(again.error?.hint?.contains("id") == true, "要指出换个 id：${again.error?.hint}")
+        assertTrue(File(dir, "same_mod.zip").readBytes().contentEquals(firstBytes), "原包一个字节都不该动")
+    }
+
+    @Test
+    fun `id 非法时说清允许什么字符`() {
+        val r = runBlocking {
+            defaultRegistry().invoke(
+                "module.create",
+                FakeContext(),
+                args("dir" to freshDir().path, "id" to "带 空格"),
+            )
+        }
+
+        assertEquals("CREATE_FAILED", r.error?.code)
+        assertTrue(r.error?.hint?.contains("字母") == true, "要说清 id 的允许字符：${r.error?.hint}")
+    }
+
+    @Test
+    fun `flavour 只认 shell 和 zygisk`() {
+        val r = runBlocking {
+            defaultRegistry().invoke(
+                "module.create",
+                FakeContext(),
+                args("dir" to freshDir().path, "id" to "x", "flavour" to "java"),
+            )
+        }
+
+        assertEquals("BAD_FLAVOUR", r.error?.code)
+        assertTrue(r.error?.hint?.contains("zygisk") == true, "要说清两档各自适合什么：${r.error?.hint}")
     }
 }
