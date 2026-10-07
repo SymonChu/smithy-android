@@ -57,6 +57,15 @@ data class AddOnSpec(
     val summary: String,
     val kind: AddOnKind,
     val url: String,
+
+    /**
+     * 备用地址（镜像）。按顺序试：主地址失败就换下一个。
+     *
+     * 为什么必须有：主地址（GitHub Release、Google、Alpine 官方 CDN）在中国网络里
+     * 常年不稳 —— 对「别的用户」来说，一个下不动的主地址等于没有这条路。
+     * 换镜像时**照样验 SHA-256**：镜像给的东西不对就得换下一个，不能凑合用。
+     */
+    val mirrors: List<String> = emptyList(),
     /** 上游公布的体积（实测过）。用来判断「下完了吗」，也用来在界面上先说清代价。 */
     val bytes: Long,
     val sha256: String,
@@ -118,6 +127,10 @@ object AddOnCatalog {
             "两条「在手机上编译」的路（发行版 clang、自建工具链）都要先有它",
         kind = AddOnKind.ROOTFS,
         url = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.10-aarch64.tar.gz",
+        // 实测可用（206 = 支持续传）；官方 CDN 在中国网络里常年抽风，有镜像才算「别的用户也能装」
+        mirrors = listOf(
+            "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.20/releases/aarch64/alpine-minirootfs-3.20.10-aarch64.tar.gz",
+        ),
         bytes = 3_952_266,
         sha256 = "61ac877fdbcee6914731bc22a4ed5668ea3470f201f97a7078931c48b71bbeec",
         archive = AddOnArchive.TAR_GZ,
@@ -154,7 +167,41 @@ object AddOnCatalog {
         onlyPaths = listOf("sysroot/usr/include", "sysroot/usr/lib/aarch64-linux-android"),
     )
 
-    val all: List<AddOnSpec> = listOf(rootfsAlpine, sysrootNdkArm64)
+    /**
+     * 手机上直接跑的 C/C++ 工具链（Termux 的 bionic 闭包，**免 root**）。
+     *
+     * 这是「别的用户装完 App 怎么才能编 so」的主路径：官方没有给 arm64 安卓的 clang
+     * （NDK 只有 x86_64/darwin/windows 宿主机版，LLVM 官方也没有 android 目标），
+     * 而 Termux 的包是原生 aarch64 + bionic 的，解到应用目录就能跑。
+     *
+     * 它自带 bionic 的头与桩库（`include/`、`aarch64-linux-android/lib/`），
+     * 所以**不需要**另外下 sysroot 那一条 —— 装完就能编。
+     *
+     * sha256 是**把 GH 上那份整包下回来算过**的（不是拿本地文件凑的）。
+     */
+    val toolchainClangArm64 = AddOnSpec(
+        id = "toolchain-clang-aarch64",
+        name = "C/C++ 工具链（clang，aarch64）",
+        summary = "手机上直接跑的 clang + bionic 头与桩库，免 root。约 154MB，装后约 370MB。" +
+            "装上它之后 zygisk 模块就能在手机上编出 so",
+        kind = AddOnKind.TOOLCHAIN,
+        url = "https://github.com/SymonChu/smithy-android/releases/download/toolchain-aarch64-v1/termux-clang-aarch64.tar.gz",
+        // GitHub 资产在中国网络里多半直连不动，这两个是可用的加速镜像（实测 206）
+        mirrors = listOf(
+            "https://ghproxy.net/https://github.com/SymonChu/smithy-android/releases/download/toolchain-aarch64-v1/termux-clang-aarch64.tar.gz",
+            "https://ghfast.top/https://github.com/SymonChu/smithy-android/releases/download/toolchain-aarch64-v1/termux-clang-aarch64.tar.gz",
+        ),
+        bytes = 161_298_217,
+        sha256 = "4f45cb5f2941364d248ab8ac15ebce30c78e3bb71dca487ff7032ec9a29cb721",
+        archive = AddOnArchive.TAR_GZ,
+        license = "clang/llvm/lld/libLLVM/compiler-rt = Apache-2.0 with LLVM exception；libc++ = MIT/UIUC；" +
+            "bionic 头与桩库来自 Android NDK；另有 LGPL 的 libiconv（未修改、独立动态库）。不含 GPL-3.0",
+        homepage = "https://github.com/SymonChu/smithy-android/releases/tag/toolchain-aarch64-v1",
+        // 包里套了一层 termux-toolchain/
+        stripComponents = 1,
+    )
+
+    val all: List<AddOnSpec> = listOf(toolchainClangArm64, rootfsAlpine, sysrootNdkArm64)
 
     fun find(id: String): AddOnSpec? = all.firstOrNull { it.id == id.trim() }
 }
@@ -242,27 +289,66 @@ class AddOnManager(val root: File) {
         )
     }
 
-    /** 下载到 `<root>/<id><ext>`（`.part` 是半个文件，断了还能接着下）。 */
+    /**
+     * 下载到 `<root>/<id><ext>`：先试主地址，不行就依次试镜像。
+     *
+     * 每个地址下完都**验一遍 sha256**（有登记的话）：镜像给的东西不对就换下一个地址重来。
+     * 这条对「别的用户」才算真可用 —— 主地址下不动时只报错，等于没有这条路。
+     */
     fun download(spec: AddOnSpec, onProgress: (AddOnProgress) -> Unit = {}): File {
         root.mkdirs()
         val dest = File(root, spec.id + spec.archive.ext)
         val part = File(root, dest.name + ".part")
+        val sources = listOf(spec.url) + spec.mirrors
+        var last: String? = null
+        for ((i, url) in sources.withIndex()) {
+            try {
+                downloadFrom(url, spec, part, onProgress)
+                if (spec.sha256.isNotEmpty() && !verify(spec, part, onProgress)) {
+                    part.delete() // 这份不对，别留着
+                    last = "校验不过：从 $url 拿到的和登记的 sha256 不一致"
+                    continue
+                }
+                if (!part.renameTo(dest)) part.copyTo(dest, overwrite = true).also { part.delete() }
+                return dest
+            } catch (e: Exception) {
+                last = "${e.message}（$url）"
+                // 换地址就重来：两个镜像的字节不能接在一起
+                if (i < sources.lastIndex) part.delete()
+            }
+        }
+        // 「校验不过」和「网络断了」不是一回事：一个要换地址/更新登记，一个要重试。
+        // 用不同的异常分开，别让上层把两者给出同一句提示。
+        val why = last ?: "下载失败"
+        throw if (why.startsWith("校验不过")) ChecksumMismatch(why) else IOException(why)
+    }
+
+    /** 拿到的东西和登记的 sha256 不一致 —— 要么镜像有问题，要么上游换包了。 */
+    class ChecksumMismatch(message: String) : IOException(message)
+
+    /** 从一个地址下到 `.part`（半个文件留着，下次接着下）。 */
+    private fun downloadFrom(
+        url: String,
+        spec: AddOnSpec,
+        part: File,
+        onProgress: (AddOnProgress) -> Unit,
+    ) {
         var have = if (part.isFile) part.length() else 0L
         if (have > spec.bytes) have = 0L // 比预期还长的半个文件：不可能是它，重下
 
         val req = Request.Builder()
-            .url(spec.url)
+            .url(url)
             .header("User-Agent", USER_AGENT)
             .apply { if (have > 0L) header("Range", "bytes=$have-") }
             .build()
 
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) {
-                throw IOException("下载失败：HTTP ${resp.code} ${resp.message}（${spec.url}）")
+                throw IOException("下载失败：HTTP ${resp.code} ${resp.message}")
             }
             // 服务器不认续传就从头来，别把两段接在一起
             if (have > 0L && resp.code != 206) have = 0L
-            val body = resp.body ?: throw IOException("响应没有内容：${spec.url}")
+            val body = resp.body ?: throw IOException("响应没有内容")
             val total = when {
                 have > 0L -> have + body.contentLength()
                 else -> body.contentLength()
@@ -290,8 +376,6 @@ class AddOnManager(val root: File) {
                     "网络稳的时候再点一次（会接着下）",
             )
         }
-        if (!part.renameTo(dest)) part.copyTo(dest, overwrite = true).also { part.delete() }
-        return dest
     }
 
     /** 校验文件内容的 sha256。 */
@@ -322,6 +406,12 @@ class AddOnManager(val root: File) {
     fun install(spec: AddOnSpec, onProgress: (AddOnProgress) -> Unit = {}): AddOnResult {
         val archive = try {
             download(spec, onProgress)
+        } catch (e: ChecksumMismatch) {
+            return AddOnResult(
+                false,
+                message = e.message ?: "校验不过",
+                hint = "那份已经删了。换个地址再试一次；要是总不对，多半是上游换包了，需要更新登记里的 sha256",
+            )
         } catch (e: Exception) {
             return AddOnResult(false, message = e.message ?: "下载失败", hint = "检查网络后重试；重复点会接着下，不会从头来")
         }

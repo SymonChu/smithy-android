@@ -175,15 +175,28 @@
 >   `-L` / `-o <abi>.so`）+ `ModuleNativeBuild`（源码 → `zygisk/<abi>.so` → 写回新 zip，原包不动）
 >   + 工具层的 `native.toolchain` / `module.build` + 模块页的「编译 .so」。人都走同一条路径，
 >   产物名就是 ABI 名（Magisk 按文件名认）。
-> - **工具链怎么弄到手机上（三条路，入口都接上了）**
->   1. **下载**：`component.install id=rootfs-alpine` / 模块页「下载 Alpine rootfs」——
->      4MB 的 Alpine minirootfs（真 URL、上游公布的 sha256、可续传），是「在它里面装 clang」
->      那条路的宿主，装到 `filesDir/addon/rootfs`。
->   2. **灌本地包**：`component.install file=/sdcard/Download/bundle.zip` / 模块页「导入工具链包…」——
->      把外面产出的工具链包（`bin/clang++` + `sysroot/`）解到 `filesDir/addon/native-toolchain`；
->      装完立刻重扫，能编就说能编。
->   3. **手工解**到 `filesDir/native-toolchain` 或 `filesDir/ndk`（认 NDK 的
->      `toolchains/llvm/prebuilt/<host>` 布局）。
+> - **工具链怎么弄到手机上（四条路，入口都接上了）**
+>   1. **App 内一键下**（**主路径，「别的用户」也走得通**）：模块页编译卡「下载工具链包」/
+>      `component.install id=toolchain-clang-aarch64` —— 154MB 的 Termux bionic 闭包，
+>      **免 root**。主地址是 GitHub Release 资产，带**两个镜像 failover**（实测可用），
+>      换镜像时照样验 SHA-256（不对就换下一个地址，不凑合）。
+>      **装完自带 bionic 的头与桩库，不需要另外下 sysroot** —— 装完就能编。
+>      清单里钉的 sha256 是**把 GH 上那份整包下回来算过**的，不是拿本地文件凑的。
+>   2. **灌本地包**：`component.install file=/sdcard/Download/bundle.tar.gz` / 编译卡
+>      「导入工具链包…」—— 解到 `filesDir/addon/native-toolchain`，装完立刻重扫。
+>   3. **手工解**到 `filesDir/addon/native-toolchain`、`filesDir/native-toolchain` 或 `filesDir/ndk`
+>      （认 NDK 的 `toolchains/llvm/prebuilt/<host>` 布局）。
+>   4. **手机上已经装了 Termux 的话，零下载**：探测 `/data/data/com.termux/files/usr/bin/clang++`
+>      并直接用它编译（`TermuxClangToolchain`）。Termux 的目录是它的私有目录，所以
+>      **探测与执行都走 root 通道**；没装 Termux 就安静返回 null，不当错误。
+>      ⚠️ 这条路线**未在真机验证**（命令行拼法有测试钉住，`describe()` 里也如实写了）。
+>
+> - **要 root 的备选：rootfs + chroot**。Alpine 里 `apk add clang`（`rootfs.setup`）。
+>   适合「没有 Termux、也不想下 154MB」但愿意用 root 的场景。
+>   顺带一条硬约束：**chroot 里的 `/bin/sh` 不读 profile** —— 不显式
+>   `export PATH=/sbin:/usr/sbin:/bin:/usr/bin` 的话，第一句就是 `apk: not found`；
+>   还有「不挂 `/proc` `/dev` → apk 莫名中断」「不写 `/etc/resolv.conf` → 报
+>   `Permission denied`（最容易查偏的一处）」，`RootFs.prepare()` 里都处理了。
 >
 > - **路线 C（首选，免 root）：Termux 的 bionic 闭包**。官方确实没有给 arm64 安卓的 clang
 >   （NDK 只发 x86_64/darwin/windows 宿主机版；LLVM 官方 release 没有 android 目标），

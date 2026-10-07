@@ -88,7 +88,8 @@ class NativeToolsTest {
 
         assertEquals("NO_TOOLCHAIN", r.error?.code)
         val hint = r.error?.hint.orEmpty()
-        assertTrue(hint.contains("clang") && hint.contains("sysroot"), "要说清缺的是什么：$hint")
+        // 措辞要落成**能点的东西**：说按钮名、说体积，别只说「缺 clang + sysroot」
+        assertTrue(hint.contains("下载工具链包") && hint.contains("导入工具链包"), "要给可操作的下一步：$hint")
         assertTrue(hint.contains("不需要编译"), "要给出退路（纯脚本模块照样能用）：$hint")
     }
 
@@ -109,7 +110,7 @@ class NativeToolsTest {
         val r = defaultRegistry().call("native.toolchain", FakeContext(), JsonObject(emptyMap()))
 
         assertEquals("NO_TOOLCHAIN", r.error?.code)
-        assertTrue(r.error?.hint?.contains("300") == true, "要给下载体积这类可判断的信息：${r.error?.hint}")
+        assertTrue(r.error?.hint?.contains("154") == true, "要给下载体积这类可判断的信息：${r.error?.hint}")
     }
 
     // ── 编一次 ──────────────────────────────────────────────

@@ -12,6 +12,7 @@ import dev.smithy.fs.ModuleSkeletonSpec
 import dev.smithy.fs.ModuleNativeBuild
 import dev.smithy.fs.NativeAbi
 import dev.smithy.fs.NativeToolchains
+import dev.smithy.fs.NativeToolchain
 import dev.smithy.fs.AddOnArchive
 import dev.smithy.fs.AddOnCatalog
 import dev.smithy.fs.AddOnHost
@@ -75,6 +76,29 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshInstalled()
+        // 顺手看看这台设备现在能不能编（含 Termux 那条探测，要走 root 通道 → 放 IO 上）。
+        // 不弹提示：编译卡自己会反映状态，安静地把工具链登记上就够了。
+        viewModelScope.launch { withContext(Dispatchers.IO) { rescanToolchain() } }
+    }
+
+    /**
+     * 重算「现在能不能编」，三条路按「麻烦程度」依次试：
+     * ① 应用目录里的工具链（下载/导入的包，**免 root**）
+     * ② rootfs 里的 clang（路线 A，要 root：chroot）
+     * ③ 手机上已装的 Termux 的 clang（零下载，要 root：路径是它的私有目录）
+     *
+     * ②③ 都要走 shell 探测（几十到几百毫秒），所以**必须在 IO 线程调用**。
+     */
+    private fun rescanToolchain(): NativeToolchain? {
+        val filesDir = getApplication<Application>().filesDir
+        NativeToolchains.scan(*NativeToolchains.standardRoots(filesDir).toTypedArray())?.let { return it }
+        val shell = ShellChannels.current() ?: return null
+        if (!shell.available()) return null
+        val mount = RootFs.deployDirFor()
+        if (RootFs(File(mount), shell).hasClang()) {
+            NativeToolchains.scanChroot(shell, mount, NativeToolchains.chrootSysroot(filesDir))?.let { return it }
+        }
+        return NativeToolchains.scanTermux(shell)
     }
 
     /** 重新读设备上的模块列表与通道可用性。 */
@@ -385,13 +409,11 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
      * 装之前说「缺工具链」，装之后同一句话还能看见的话，用户会以为装了个没用的东西 ——
      * 所以这里必须把「现在能不能编」重新算一遍再说给他听。
      */
-    private fun afterComponent(ok: Boolean, name: String, message: String?, hint: String?) {
+    private suspend fun afterComponent(ok: Boolean, name: String, message: String?, hint: String?) {
         if (!ok) {
             return message(listOfNotNull(message, hint).joinToString("\n"), isError = true)
         }
-        val found = NativeToolchains.scan(
-            *NativeToolchains.standardRoots(getApplication<Application>().filesDir).toTypedArray(),
-        )
+        val found = withContext(Dispatchers.IO) { rescanToolchain() }
         _state.update {
             it.copy(
                 busy = null,

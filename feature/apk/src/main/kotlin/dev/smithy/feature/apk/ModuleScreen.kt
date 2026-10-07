@@ -536,6 +536,22 @@ private fun NativeCard(
             // 没有工具链时给出两条**真能走的路**，而不是只写一句「缺工具链」：
             // rootfs 是官方能直接下的那一条；本地包是眼下唯一能拿到 arm64 clang 的一条。
             if (!ready) {
+                // 放最前面：**这才是「别的用户」的主路径** —— 装完 App 点一下就有编译器，
+                // 不用 root、不用电脑、不用懂 native-toolchain 是什么。
+                val tc = AddOnCatalog.toolchainClangArm64
+                val tcInstalled = addons?.installed(tc) != null
+                Pill(
+                    label = if (tcInstalled) {
+                        "工具链已装（${addons?.installed(tc)?.let { humanSize(it.bytes) } ?: ""}）"
+                    } else {
+                        "下载工具链包（${humanSize(tc.bytes)}）"
+                    },
+                    onClick = { onInstallComponent(tc.id) },
+                    icon = SmithyIcons.Download,
+                    enabled = !tcInstalled,
+                )
+                Pill("导入工具链包…", onImportComponent, icon = SmithyIcons.OpenFolder)
+                // 下面这条是要 root 的另一条路（Alpine rootfs + chroot 里装 clang）
                 Pill(
                     label = if (rootfsInstalled) {
                         "Alpine rootfs 已装（${addons?.installed(rootfs)?.let { humanSize(it.bytes) } ?: ""}）"
@@ -546,7 +562,6 @@ private fun NativeCard(
                     icon = SmithyIcons.Download,
                     enabled = !rootfsInstalled,
                 )
-                Pill("导入工具链包…", onImportComponent, icon = SmithyIcons.OpenFolder)
                 // 装了 rootfs、也有 root 的话，还有第三条更省事的路：在 rootfs 里装编译器
                 if (rootfsInstalled && ShellChannels.current()?.available() == true) {
                     Pill("准备编译环境（在 rootfs 里装 clang）", onPrepareRootfs, icon = SmithyIcons.Package)

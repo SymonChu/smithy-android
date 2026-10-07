@@ -106,8 +106,10 @@ class NativeBuildTest {
 
         NativeToolchains.register(null)
         val e = assertFailsWith<IllegalStateException> { NativeToolchains.require() }
-        assertTrue(e.message!!.contains("clang"), "要说清缺 clang：${e.message}")
-        assertTrue(e.message!!.contains("sysroot"), "要说清缺 sysroot：${e.message}")
+        // 措辞要对**陌生用户**可操作：给出界面上的按钮名，而不是「解到某某目录」
+        assertTrue(e.message!!.contains("下载工具链包"), "要给出能点的下一步：${e.message}")
+        assertTrue(e.message!!.contains("导入工具链包"), "两条路都要说：${e.message}")
+        assertFalse(e.message!!.contains("docs/"), "别把仓库路径写进给用户看的话：${e.message}")
 
         // 文件在但没有执行位 → available() 必须是假（否则会「有实现、跑不了」）
         val bin = File(root, "bin").apply { mkdirs() }

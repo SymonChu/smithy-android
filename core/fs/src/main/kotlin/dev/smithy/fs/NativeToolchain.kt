@@ -113,6 +113,9 @@ class ClangToolchain(
 
     override val name: String get() = "clang"
 
+    /** 编译器本体。包装类（比如走 root 通道跑的 [TermuxClangToolchain]）要用这个路径。 */
+    val clangBinary: File get() = clang
+
     override fun available(): Boolean = clang.isFile && clang.canExecute()
 
     /**
@@ -256,9 +259,9 @@ object NativeToolchains {
      * 仓库里的路径（docs/06 的 M6-B）不进这句话。
      */
     fun missingHint(): String =
-        "还没有 native 编译工具链：zygisk 模块要先把它编成 zygisk/<abi>.so，" +
-            "这需要 clang + Android sysroot（约 300–400MB，按需下载，不进主包）。" +
-            "把它解到应用的 native-toolchain 目录后重启 App 就会自动扫到；" +
+        "还没有编译工具链。zygisk 模块要先把它编成 zygisk/<abi>.so —— " +
+            "在「模块」页的编译卡里点「下载工具链包」（约 154MB，免 root），" +
+            "或者点「导入工具链包…」选一个手机上已有的包。装完这里会自动变成可点。" +
             "纯脚本模块不需要编译，照样能刷能生效"
 
     /** 拿一个「一定可用」的工具链，不可用时抛带原因的异常。 */
@@ -306,6 +309,24 @@ object NativeToolchains {
         val rootFs = RootFs(File(rootfsMount), shell)
         if (!rootFs.hasClang()) return null
         val chain = ChrootClangToolchain(rootFs, shell, sysroot)
+        register(chain)
+        return chain
+    }
+
+    /**
+     * 手机上装了 Termux 的话，直接用它的 clang（**零下载**）。
+     *
+     * 探测要 root：Termux 的目录是它自己的私有目录，应用看不见。没 root、没装 Termux
+     * 就返回 null —— **这不是错误**，只是这条路走不通；还有「下载工具链包」与
+     * 「导入工具链包」两条。
+     */
+    fun scanTermux(
+        shell: ShellChannel?,
+        prefixes: List<String> = listOf("/data/data/com.termux/files/usr"),
+    ): NativeToolchain? {
+        if (shell == null || !shell.available()) return null
+        val prefix = prefixes.firstOrNull { shell.exec("test -x $it/bin/clang++", 20L).ok } ?: return null
+        val chain = TermuxClangToolchain(File(prefix), shell)
         register(chain)
         return chain
     }

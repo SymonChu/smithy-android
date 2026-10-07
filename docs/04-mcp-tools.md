@@ -72,7 +72,7 @@
 | `native.toolchain` | R | — | 看 native 编译工具链在不在、是哪一份（clang + sysroot 路径）。**要在 zygisk 模块里编 `.so` 之前先问它**，别等编译失败才发现设备上没有工具链 |
 | `module.build` | W | zip, abi=arm64-v8a, api=26, out?, flags? | 把模块 `jni/` 下的 C++ 源码编成 `zygisk/<abi>.so` 并写回**新** zip（原包不动）。**改完模块逻辑让它真生效的那一步** —— Magisk 只认 `zygisk/<abi>.so`，源码刷进去不会生效。需要工具链（M6-B 的下载项），没有时工具会说清缺什么 |
 | `component.list` | R | — | 可选组件（M5）：装没装、多大、装在哪个目录、要不要 root、许可，外加 native 工具链当前能不能用。**编 `.so` 之前先问它** |
-| `component.install` | W | id=\|file=, kind?, sha256?, strip? | 下载并安装一个可选组件（`id=rootfs-alpine` 走登记地址），或把手机本地的一份归档灌进去（`file=/sdcard/Download/bundle.zip`）。装完自动重扫工具链，能编就说能编 |
+| `component.install` | W | id=\|file=, kind?, sha256?, strip? | 下载并安装一个可选组件：**`id=toolchain-clang-aarch64`**（154MB 的编译工具链，**免 root**，主地址 GitHub Release，带两个镜像 failover）、`id=rootfs-alpine`（3.9MB）、`id=sysroot-ndk-arm64`；或把手机本地的一份归档灌进去（`file=/sdcard/Download/bundle.tar.gz`）。**换镜像时照样验 SHA-256**，不对就换下一个地址。装完自动重扫工具链，能编就说能编 |
 | `rootfs.setup` | W | rootfs?, skipApk? | 把 Alpine rootfs 部署到可执行位置（`/data/local/tmp/smithy/rootfs`）、挂 `/proc` `/dev`、写 `resolv.conf`，再 `apk add clang`。**做完 `module.build` 就能在手机上编**，不用任何外部产物。要 root |
 | `rootfs.exec` | D | script, rootfs?, timeout? | 在一个已部署的 rootfs 里执行命令（chroot 进去）。装包、看版本、跑 CLI 都走它。要 root，会改设备，所以每次都让用户确认 |
 | `module.open` | W | path | 打开模块 zip 为工作区，返回 moduleWorkspaceId + 元数据摘要；`workspace.status` / `patch.*` / `fs.*` 对模块工作区同样可用 |
@@ -106,7 +106,7 @@
 | `tunnel.start/stop` | W | cloudflared 公网预览（对齐 CodeForge） |
 | `rootfs.exec` | D | 需先下载 rootfs 模块（**下载/安装已具备**：`component.install id=rootfs-alpine`；chroot 里执行还没接） |
 | `build.gradle_assemble` | W | 需先下载构建模块 |
-| `build.module_assemble` | W | 需先下载 native 构建模块（clang + sysroot），从源码编译 `.so`；改模块逻辑的唯一正当路径 —— **已实现为 `module.build`**（见上表），还差工具链二进制的分发 |
+| `build.module_assemble` | W | 需先下载 native 构建模块（clang + sysroot），从源码编译 `.so`；改模块逻辑的唯一正当路径 —— **已实现为 `module.build`**（见上表），工具链现在**App 内一键可下**（`component.install id=toolchain-clang-aarch64`，154MB、免 root、带镜像 failover） |
 
 ## 结果与错误约定
 - 返回统一 JSON；列表类结果带 `total` + `nextCursor` 分页，避免一次塞爆上下文
