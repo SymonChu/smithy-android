@@ -89,7 +89,10 @@ fun ChatScreen(
         if (state.items.isNotEmpty()) listState.animateScrollToItem(state.items.size - 1)
     }
 
-    Column(modifier.fillMaxSize().imePadding()) {
+    // **不要**在这里再挂 `.imePadding()`：主 Activity 的 Scaffold 已经在 content Box
+    // 统一处理了键盘 inset（见 MainActivity 里 consumeWindowInsets + imePadding 那段）。
+    // 两处都挂会把键盘高度算两遍，输入栏被顶到键盘底下 —— 表现为「一打字就看不见输入框」。
+    Column(modifier.fillMaxSize()) {
         TopBar(workspaceName, state.running, state.trustWrites, onAttach, onClear)
 
         if (state.items.isEmpty()) {

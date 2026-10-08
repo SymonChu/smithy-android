@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -306,7 +308,24 @@ fun SmithyRoot(
             }
         },
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
+        // 键盘/输入法（ime）的处理必须在这一层和 Scaffold 的 padding 协同，不能各算各的。
+        //
+        // 之前只有 ChatScreen 内部挂了 `.imePadding()`，而它拿到的 modifier 已经吃了
+        // Scaffold 的 contentPadding（那里面含 64dp 底栏 + 系统导航栏）。`imePadding()`
+        // 的高度是**从屏幕底边**算的键盘遮挡量 —— 两个高度叠在一起，输入栏被推到键盘
+        // 底下，点开键盘就「什么都看不见」。
+        //
+        // 现在：`consumeWindowInsets(padding)` 把 Scaffold 已经垫掉的 bottomBar inset
+        // 标记为已消费（内层再算 ime 时不会重复计入这部分），`imePadding()` 仍挂在
+        // content Box 上、由各页共享 —— 键盘弹起时整个内容区（含输入栏）一起上移，
+        // 输入栏永远压在键盘上方。
+        Box(
+            Modifier
+                .consumeWindowInsets(padding)
+                .imePadding()
+                .padding(padding)
+                .fillMaxSize(),
+        ) {
             // 切标签用 fade-through：旧页淡出（略缩），新页淡入。
             // 一级导航**不做左右滑动** —— 滑动表达「同一层级里的相邻关系」，
             // 而四个 tab 之间没有这种空间关系；滑动反而会让人以为能横着划过去。
