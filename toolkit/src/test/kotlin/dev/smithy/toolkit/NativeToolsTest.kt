@@ -88,8 +88,10 @@ class NativeToolsTest {
 
         assertEquals("NO_TOOLCHAIN", r.error?.code)
         val hint = r.error?.hint.orEmpty()
-        // 措辞要落成**能点的东西**：说按钮名、说体积，别只说「缺 clang + sysroot」
-        assertTrue(hint.contains("下载工具链包") && hint.contains("导入工具链包"), "要给可操作的下一步：$hint")
+        // 措辞要落成**能点的东西**：说清楚在哪一页装、说那个页面上真实存在的按钮。
+        // 钉「安装全部」而不是旧措辞里的「下载工具链包」—— 那个按钮已随组件入口统一
+        // 挪到「设置 → 扩展」，照旧措辞说会让人去找一个不存在的按钮
+        assertTrue(hint.contains("设置 → 扩展") && hint.contains("安装全部"), "要给可操作的下一步：$hint")
         assertTrue(hint.contains("不需要编译"), "要给出退路（纯脚本模块照样能用）：$hint")
     }
 
