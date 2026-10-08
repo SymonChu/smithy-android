@@ -14,8 +14,8 @@ android {
         applicationId = "dev.smithy"
         minSdk = 26          // Android 8.0 —— Shizuku 的使用场景下限
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.1"
+        versionCode = 4
+        versionName = "0.1.2"
         // 只发 arm64（见 docs/07 构建与验证）
         ndk { abiFilters += "arm64-v8a" }
     }
