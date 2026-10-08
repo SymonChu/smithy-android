@@ -57,6 +57,9 @@ fun SettingsHome(
     aiConfig: AiConfig,
     configProblem: String?,
     trustWrites: Boolean,
+    /** 当前色板（用于主题选择那一组打勾）。 */
+    palette: dev.smithy.design.SmithyTheme = dev.smithy.design.SmithyTheme.Default,
+    onPaletteChange: (dev.smithy.design.SmithyTheme) -> Unit = {},
     onSelect: (SettingsPage) -> Unit,
     onConfigChange: (AiConfig) -> Unit,
     onTrustWritesChange: (Boolean) -> Unit,
@@ -83,8 +86,20 @@ fun SettingsHome(
         ) { current ->
             when (current) {
                 // AI 接口那一页还是 ChatSettingsScreen（原样，不动它的排版）——
-                // 导航壳只在外面套一层，页内的一切都保持原样
-                SettingsPage.Ai -> aiPage(Modifier)
+                // 导航壳只在外面套一层，页内的一切都保持原样。
+                // 主题那一组**加在这一页顶部**：换色板是那种「想在设置里立刻看到效果」的事，
+                // 塞到扩展页（要为了看它先跳一次页）就失去了即时反馈的意义。
+                SettingsPage.Ai -> Column {
+                    AppearanceCard(
+                        current = palette,
+                        onChange = onPaletteChange,
+                        modifier = Modifier.padding(
+                            horizontal = SmithySpacing.gutter,
+                            vertical = SmithySpacing.gap,
+                        ),
+                    )
+                    aiPage(Modifier)
+                }
                 SettingsPage.Extensions -> ExtensionsScreen(
                     state = state,
                     onRefresh = onRefreshExtensions,

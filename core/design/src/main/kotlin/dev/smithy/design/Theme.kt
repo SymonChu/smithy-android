@@ -178,14 +178,21 @@ val SmithyMono = FontFamily.Monospace
  * **不启用动态取色**（Android 12+ 从壁纸取色）：这个界面上权重色是有含义的
  * （error 表示破坏性、primary 表示当前所处位置），跟着壁纸变会让同一张截图
  * 在不同手机上表达不同的意思。品牌一致性在这里比个性化重要。
+ *
+ * [palette] 是**色板**，不是亮暗 —— 四套色板各自都有独立的亮/暗两版。
+ *
+ * 参数名用 `palette` 而不是 `theme`：那个名字被 [SmithyTheme]（枚举）占着，
+ * 同名参数会在函数体里把类型遮蔽掉，写 `theme.dark` 时拿到的是形参 —— 编译能过，
+ * 运行时报「枚举没有 dark」。这类错很难倒查。
  */
 @Composable
 fun SmithyTheme(
     dark: Boolean = isSystemInDarkTheme(),
+    palette: SmithyTheme = SmithyTheme.Default,
     content: @Composable () -> Unit,
 ) {
     MaterialTheme(
-        colorScheme = if (dark) SmithyDarkColors else SmithyLightColors,
+        colorScheme = if (dark) palette.dark else palette.light,
         typography = SmithyTypography,
         shapes = SmithyShapes,
         content = content,

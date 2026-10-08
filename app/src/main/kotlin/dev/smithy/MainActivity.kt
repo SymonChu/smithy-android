@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import dev.smithy.design.SmithyIcons
 import dev.smithy.design.SmithyMotion
 import dev.smithy.design.SmithyTheme
+import dev.smithy.design.ThemeStore
 import dev.smithy.design.rememberSmithyHaptics
 import dev.smithy.feature.apk.ApkWorkbenchScreen
 import dev.smithy.feature.chat.ChatScreen
@@ -88,6 +89,14 @@ class MainActivity : ComponentActivity() {
      */
     private val resumeTick = mutableIntStateOf(0)
 
+    /**
+     * 主题存储。
+     *
+     * 放在 Activity 而不是 `SmithyApp`：主题是**界面状态**，跟着 Activity 生命周期走更清楚
+     * （App 进程被回收后重建时会重新读一次，读到用户最后选的那套）。
+     */
+    private val themeStore by lazy { ThemeStore(this) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Edge-to-edge：targetSdk 35 起 Android 强制内容延伸到状态栏后面，
@@ -99,7 +108,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             // 主题套在最外层：整棵界面树都从它取色板/字阶/圆角。
             // 之前一行主题代码都没有 —— 用的是 M3 内置默认浅色，系统切暗色时界面还是白的
-            SmithyTheme {
+            //
+            // 主题（色板）是**状态**，所以要用 remember 而不是常量：设置页改一下，
+            // 整棵树要立刻换色板（换个 MaterialTheme 就够了，不需要重建 Activity）。
+            // 存哪由 ThemeStore 管，设置页通过 onThemeChange 写进去。
+            var palette by remember { mutableStateOf(themeStore.current()) }
+            SmithyTheme(palette = palette) {
                 // 启动淡入：冷启动时用户先看到的是窗口底色（themes.xml，Android 12+ 是
                 // 系统启动画面），Compose 首帧画出来那一刻如果整屏「啪」地出现，观感上
                 // 就是闪一下。给根节点一段 320ms 的淡入 + 极轻微放大，把
@@ -131,6 +145,11 @@ class MainActivity : ComponentActivity() {
                         incomingUri = incoming.value,
                         onIncomingConsumed = { incoming.value = null },
                         resumeTick = resumeTick.intValue,
+                        palette = palette,
+                        onPaletteChange = { picked ->
+                            palette = picked
+                            themeStore.set(picked)
+                        },
                     )
                 }
             }
@@ -178,6 +197,9 @@ fun SmithyRoot(
     incomingUri: Uri? = null,
     onIncomingConsumed: () -> Unit = {},
     resumeTick: Int = 0,
+    /** 当前色板。换成别的就会整棵树换色（MaterialTheme 换 colorScheme 即可）。 */
+    palette: dev.smithy.design.SmithyTheme = dev.smithy.design.SmithyTheme.Default,
+    onPaletteChange: (dev.smithy.design.SmithyTheme) -> Unit = {},
 ) {
     var tab by remember { mutableStateOf(Tab.Apk) }
 
@@ -441,6 +463,8 @@ fun SmithyRoot(
                         aiConfig = chatState.config,
                         configProblem = chatState.configProblem,
                         trustWrites = chatState.trustWrites,
+                        palette = palette,
+                        onPaletteChange = onPaletteChange,
                         onSelect = { settingsPage = it },
                         onConfigChange = chatVm::onConfigChange,
                         onTrustWritesChange = chatVm::setTrustWrites,
