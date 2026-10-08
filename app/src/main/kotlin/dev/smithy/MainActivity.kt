@@ -261,9 +261,9 @@ fun SmithyRoot(
 
     val haptics = rememberSmithyHaptics()
 
-    // 设置里两页：接口设置与扩展中心。默认落在接口设置上（多数人来这儿是填 key），
-    // 「扩展」在第二行 —— 它是个低频但很重的页面（一次下几百 MB），不该抢第一眼
-    var settingsPage by remember { mutableStateOf(SettingsPage.Ai) }
+    // 设置里四页。默认落在「外观」——主题是唯一「改完立刻能看到效果」的设置，
+    // 放在第一页最省事；而 AI 接口是要反复改的，不该占着第一眼
+    var settingsPage by remember { mutableStateOf(SettingsPage.Appearance) }
     val extVm = remember { ExtensionsViewModel(app) }
     val extState by extVm.state.collectAsState()
 
@@ -460,9 +460,6 @@ fun SmithyRoot(
                     Tab.Settings -> SettingsHome(
                         page = settingsPage,
                         state = extState,
-                        aiConfig = chatState.config,
-                        configProblem = chatState.configProblem,
-                        trustWrites = chatState.trustWrites,
                         palette = palette,
                         onPaletteChange = onPaletteChange,
                         onSelect = { settingsPage = it },

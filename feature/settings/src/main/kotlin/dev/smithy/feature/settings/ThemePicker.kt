@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -32,6 +34,7 @@ import dev.smithy.design.SmithyIcons
 import dev.smithy.design.SmithyMotion
 import dev.smithy.design.SmithySpacing
 import dev.smithy.design.SmithyTheme
+import dev.smithy.design.SmithyTopBar
 import dev.smithy.design.rememberSmithyHaptics
 
 /**
@@ -173,25 +176,40 @@ private fun Swatch(theme: SmithyTheme) {
 }
 
 /**
- * 设置首页里的「外观」分组。
+ * 设置 → 外观，整页。
  *
- * 只放主题选择 —— **不做亮/暗开关**：暗色跟随系统是既有约定，加一个开关会和系统打架
- * （用户白天开了「亮」而系统是暗的，那个开关就永远生效不了，是个骗人的开关）。
+ * 独立成页而不是塞进 AI 接口那一页（0.1.4 时的位置）：换主题是**全局外观**的事，
+ * 和「填 API key」不是一类。放在一起时，为了换个颜色要滚过三个输入框。
  */
 @Composable
-fun AppearanceCard(
+fun AppearancePage(
     current: SmithyTheme,
     onChange: (SmithyTheme) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    SmithyCard(modifier) {
-        Column(Modifier.padding(SmithySpacing.cardPadding)) {
-            Text("主题", style = MaterialTheme.typography.titleSmall)
+    Column(modifier.fillMaxWidth()) {
+        SmithyTopBar(
+            title = "外观",
+            subtitle = "主题色板",
+        )
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = SmithySpacing.section),
+        ) {
+            // 说明放在选择器**上面**：先说清「亮暗跟随系统、为什么没有开关」，
+            // 少一个开关用户就会去找；写在下面就变成「少了个功能」
             Text(
-                "亮暗跟随系统设置。每套色板各有独立的亮色与暗色两版 —— 换色板不会让哪一版糊掉。",
-                style = MaterialTheme.typography.labelSmall,
+                "亮暗跟随系统设置，每套色板各有独立的亮色与暗色两版 —— " +
+                    "所以这里没有亮/暗开关：加了会和系统打架，" +
+                    "白天开了「亮」而系统是暗的时候，那个开关就永远生效不了。",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp, bottom = SmithySpacing.cardPadding),
+                modifier = Modifier.padding(
+                    horizontal = SmithySpacing.gutter,
+                    vertical = SmithySpacing.gap,
+                ),
             )
             ThemePicker(current = current, onChange = onChange)
         }

@@ -188,44 +188,20 @@ fun ExtensionsScreen(
                 }
             }
 
-            // ── 权限中心 ──────────────────────────────────────
+            // ── 与权限相关的提示 ────────────────────────────────
+            // 权限的**详情**在「权限」那一页（0.1.5 从这里搬出去的）。
+            // 这里只留一句「哪些扩展需要什么权限」—— 扩展页该说的是扩展的事，
+            // 而「这台设备上我能碰到什么」是另一类问题。
             item {
-                SmithySectionTitle(text = "权限中心", modifier = Modifier.padding(top = SmithySpacing.section))
-            }
-            item {
-                SmithyCard(
+                Text(
+                    needRootNote(state),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(
                         horizontal = SmithySpacing.gutter,
                         vertical = SmithySpacing.gap,
                     ),
-                ) {
-                    PermissionRow(
-                        icon = SmithyIcons.Root,
-                        title = "Root 能力",
-                        desc = "以 su 身份执行命令。要用它装 rootfs 或走 chroot 编译",
-                        state = state.caps.rootGranted,
-                        okText = "已获取",
-                        badText = "未获取",
-                    )
-                    PermissionRow(
-                        icon = SmithyIcons.Key,
-                        title = "所有文件访问",
-                        desc = "装好的东西和从电脑传进来的包都落在应用私有目录，" +
-                            "这一项只影响能不能直接读写共享存储",
-                        state = state.caps.storageGranted,
-                        okText = "已授权",
-                        badText = "未开启",
-                        onClick = if (!state.caps.storageGranted) onRequestStorageAccess else null,
-                    )
-                    PermissionRow(
-                        icon = SmithyIcons.Permission,
-                        title = "刷入通道",
-                        desc = "模块刷进 /data/adb/modules 需要它",
-                        state = state.caps.shizukuGranted,
-                        okText = "Shizuku 已授权",
-                        badText = "Shizuku 未授权",
-                    )
-                }
+                )
             }
 
             // ── 扩展分组 ──────────────────────────────────────
@@ -564,56 +540,23 @@ private fun ActionPill(
 }
 
 /**
- * 权限行。
+ * 一句话说明权限与扩展的关系（权限详情在「权限」那一页）。
  *
- * 右端是「绿/灰状态 + 箭头」那一组。**箭头只在点得动的时候出现**（没开启且我们有
- * 下一步时）—— 给一个没有后续动作的行挂个箭头，用户点了只会觉得界面坏了。
+ * **不是把权限状态重复一遍** —— 那一页才是看状态的地方。这里只回答扩展页特有的问题：
+ * 「装这些要不要 root？」所以只说**缺不缺权限会不会挡路**，不列状态。
  */
-@Composable
-private fun PermissionRow(
-    icon: ImageVector,
-    title: String,
-    desc: String,
-    state: Boolean,
-    okText: String,
-    badText: String,
-    onClick: (() -> Unit)? = null,
-) {
-    val haptics = rememberSmithyHaptics()
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = SmithySpacing.rowHeight)
-            .then(if (onClick != null) Modifier.clickable { haptics.tap(); onClick() } else Modifier)
-            .padding(vertical = SmithySpacing.rowVertical),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(SmithySpacing.iconSize))
-        Spacer(Modifier.width(SmithySpacing.iconGap))
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(
-                desc,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.width(SmithySpacing.gap))
-        Text(
-            if (state) okText else badText,
-            style = MaterialTheme.typography.labelMedium,
-            color = if (state) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (onClick != null) {
-            Icon(
-                SmithyIcons.ChevronRight,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp).padding(start = 2.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+private fun needRootNote(state: ExtensionUiState): String {
+    val needRoot = state.catalog.filter { it.needsRoot }
+    if (needRoot.isEmpty()) {
+        return "下面这些扩展都不需要 root，装上就能用。权限状态在「权限」那一页。"
+    }
+    val names = needRoot.joinToString("、") { it.name }
+    val missing = needRoot.filter { it.needsRoot && !state.caps.rootGranted }
+    return if (missing.isNotEmpty()) {
+        "$names 需要 root，而这台设备上还没有 root —— 这几条现在装不了。" +
+            "权限状态在「权限」那一页；有了 root 之后回这里点「安装全部」即可。"
+    } else {
+        "$names 需要 root，这台设备上已经有了。权限状态在「权限」那一页。"
     }
 }
 
