@@ -58,6 +58,11 @@ import dev.smithy.feature.chat.ChatViewModel
 import dev.smithy.feature.files.FilesScreen
 import dev.smithy.feature.files.StorageAccess
 import dev.smithy.feature.files.FilesViewModel
+import dev.smithy.feature.settings.ExtensionsScreen
+import dev.smithy.feature.settings.ExtensionsViewModel
+import dev.smithy.feature.settings.ExtensionUiState
+import dev.smithy.feature.settings.SettingsHome
+import dev.smithy.feature.settings.SettingsPage
 
 class MainActivity : ComponentActivity() {
 
@@ -231,6 +236,35 @@ fun SmithyRoot(
     ) { uri -> if (uri != null) filesVm.importFromUri(uri) }
 
     val haptics = rememberSmithyHaptics()
+
+    // 设置里两页：接口设置与扩展中心。默认落在接口设置上（多数人来这儿是填 key），
+    // 「扩展」在第二行 —— 它是个低频但很重的页面（一次下几百 MB），不该抢第一眼
+    var settingsPage by remember { mutableStateOf(SettingsPage.Ai) }
+    val extVm = remember { ExtensionsViewModel(app) }
+    val extState by extVm.state.collectAsState()
+
+    // 从手机本地导入一份扩展包（电脑传过来的工具链走这条）
+    val pickLocalPackage = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        // 文件名当扩展 id：记账文件叫 `<id>.installed`，重名的话 installFromLocal 会覆盖，
+        // 这比在清单里硬造一个条目诚实（本地包本来就不该混进下载清单）
+        runCatching {
+            app.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val name = c.getString(0)?.substringAfterLast('/')?.substringBeforeLast('.')
+                if (!name.isNullOrBlank()) {
+                    // FileImporter 那套把 Uri 落成临时文件，这里只需要一个 File 句柄
+                    val tmp = java.io.File.createTempFile("addon-", ".pkg", app.cacheDir)
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        tmp.outputStream().use { input.copyTo(it) }
+                    }
+                    extVm.importLocal(tmp, name)
+                }
+            }
+        }
+    }
+
     Scaffold(
         modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars),
         // 底色显式给 background：Scaffold 默认取 surface，而列表/卡片用的是
@@ -377,12 +411,34 @@ fun SmithyRoot(
                         )
                     }
 
-                    Tab.Settings -> ChatSettingsScreen(
-                        config = chatState.config,
-                        problem = chatState.configProblem,
+                    Tab.Settings -> SettingsHome(
+                        page = settingsPage,
+                        state = extState,
+                        aiConfig = chatState.config,
+                        configProblem = chatState.configProblem,
                         trustWrites = chatState.trustWrites,
+                        onSelect = { settingsPage = it },
                         onConfigChange = chatVm::onConfigChange,
                         onTrustWritesChange = chatVm::setTrustWrites,
+                        onRefreshExtensions = extVm::refresh,
+                        onInstallExtension = extVm::install,
+                        onInstallAllExtensions = extVm::installAll,
+                        onRemoveExtension = extVm::remove,
+                        onImportExtension = { pickLocalPackage.launch(arrayOf("*/*")) },
+                        onDismissNotice = extVm::dismissNotice,
+                        onRequestStorageAccess = requestStorageAccess,
+                        // AI 接口页还是 ChatSettingsScreen（原样搬过来）—— feature:settings 不依赖
+                        // feature:chat（否则两模块互相依赖），所以由 app 层把它作为内容传进来
+                        aiPage = { m ->
+                            ChatSettingsScreen(
+                                config = chatState.config,
+                                problem = chatState.configProblem,
+                                trustWrites = chatState.trustWrites,
+                                onConfigChange = chatVm::onConfigChange,
+                                onTrustWritesChange = chatVm::setTrustWrites,
+                                modifier = m,
+                            )
+                        },
                     )
                 }
             }
