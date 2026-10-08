@@ -70,6 +70,8 @@ import java.io.File
 fun ApkWorkbenchScreen(
     incomingUri: Uri? = null,
     onIncomingConsumed: () -> Unit = {},
+    /** 缺工具链时把人送到扩展中心（设置 → 扩展）。组件的下载/导入/卸载全在那一页。 */
+    onGoToExtensions: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val vm: ApkWorkbenchViewModel = viewModel()
@@ -127,31 +129,9 @@ fun ApkWorkbenchScreen(
         }
     }
 
-    /**
-     * 灌一份工具链包进来。
-     *
-     * 为什么要从本地选文件而不是「让 App 自己下」：给 arm64 安卓用的 clang 官方没有现成的
-     * （NDK 只有 x86_64/darwin/windows 宿主机版，LLVM 也不发 android 目标），只能在外面产出一份
-     * 再传进手机。所以这条「从文件灌进去」的路是必需项，不是备胎。
-     */
-    val bundlePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                val dst = withContext(Dispatchers.IO) {
-                    // 归档要能按名字判断 zip/tar、还要反复读：先落到缓存目录
-                    val name = uri.lastPathSegment?.substringAfterLast('/') ?: "toolchain.zip"
-                    val f = File(ctx.cacheDir, "addon-${System.currentTimeMillis()}-$name")
-                    ctx.contentResolver.openInputStream(uri)?.use { input ->
-                        f.outputStream().use { input.copyTo(it) }
-                    }
-                    f
-                }
-                moduleVm.importComponent(dst)
-            }
-        }
-    }
+    // 原来这里有一个「导入工具链包…」的文件选择器（bundlePicker）。现在删了：
+    // 导入本地包这条**路本身仍然必需**（官方没有 arm64 安卓的 clang，只能在电脑产出一份
+    // 再传进手机），但入口统一收到扩展中心去了 —— 两处都摆会让人怀疑是不是两套东西。
 
     Column(modifier.fillMaxSize()) {
         // 标签行常驻在「有 apk」或「停在模块标签」时。
@@ -182,8 +162,8 @@ fun ApkWorkbenchScreen(
                     onInstall = moduleVm::install,
                     // native 编译：zygisk 那一档只有编出 zygisk/<abi>.so 才会生效
                     onCompile = { moduleVm.compile() },
-                    onInstallComponent = moduleVm::installComponent,
-                    onImportComponent = { bundlePicker.launch(arrayOf("*/*")) },
+                    // 缺工具链时不在这儿下载（那是扩展中心的事），只把人送过去
+                    onGoToExtensions = onGoToExtensions,
                     onPrepareRootfs = moduleVm::prepareRootfsEnv,
                     onSetEnabled = moduleVm::setEnabled,
                     onScheduleRemove = moduleVm::scheduleRemove,

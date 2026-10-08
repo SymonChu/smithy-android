@@ -89,10 +89,8 @@ fun ModuleScreen(
     onInstall: () -> Unit,
     /** 把 jni/ 下的源码编成 zygisk/<abi>.so。没有工具链时它只回报原因，不瞎跑一次编译。 */
     onCompile: () -> Unit,
-    /** 装一个可选组件（现在只有 Alpine rootfs 这一条，走下载）。 */
-    onInstallComponent: (String) -> Unit,
-    /** 把手机本地的一份归档灌进去 —— 目前装上 native 工具链的唯一一条路。 */
-    onImportComponent: () -> Unit,
+    /** 缺工具链时把人送到扩展中心（设置 → 扩展）。安装本身在那儿做。 */
+    onGoToExtensions: () -> Unit,
     /** 「准备编译环境」：部署 rootfs 并在里面 apk add clang（要 root）。 */
     onPrepareRootfs: () -> Unit,
     onSetEnabled: (String, Boolean) -> Unit,
@@ -191,7 +189,7 @@ fun ModuleScreen(
             } else {
                 PropCard(state, onVersion, onVersionCode, onName, onDescription, onSaveProp)
                 StructureCard(state)
-                NativeCard(state, onCompile, onInstallComponent, onImportComponent, onPrepareRootfs)
+                NativeCard(state, onCompile, onGoToExtensions, onPrepareRootfs)
                 EntriesCard(state, onEditEntry)
                 InstallCard(state, onInstall)
             }
@@ -500,13 +498,17 @@ private fun StructureCard(state: ModuleUiState) {
  *
  * 工具链不可用时不把按钮做成可点却没反应的样子：按钮置灰（点它会震一下「现在不行」），
  * 下面直接把缺什么、放哪儿写出来。
+ *
+ * **为什么只留一句指引、不再就地下载**：下载/校验/解包/卸载全在扩展中心（设置 → 扩展）里了。
+ * 两处都摆会出现「这两个按钮是不是不一样的东西」—— 而它们背后是同一个 AddOnManager，
+ * 用户看到两处入口只会更不信任。模块页保留的价值是**场景化提示**：正要编译时发现缺工具链，
+ * 告诉他缺什么、要花多少、点一下去哪装，而不是让他自己在设置里翻。
  */
 @Composable
 private fun NativeCard(
     state: ModuleUiState,
     onCompile: () -> Unit,
-    onInstallComponent: (String) -> Unit,
-    onImportComponent: () -> Unit,
+    onGoToExtensions: () -> Unit,
     onPrepareRootfs: () -> Unit,
 ) {
     val sources = state.entries.filter {
@@ -518,8 +520,6 @@ private fun NativeCard(
     val ready = toolchain?.available() == true
     val built = state.entries.filter { it.startsWith("zygisk/") }
     val addons = AddOnHost.current()
-    val rootfs = AddOnCatalog.rootfsAlpine
-    val rootfsInstalled = addons?.installed(rootfs) != null
     val sysrootAddon = AddOnCatalog.sysrootNdkArm64
     val sysrootInstalled = addons?.installed(sysrootAddon) != null
 
@@ -533,40 +533,6 @@ private fun NativeCard(
         Spacer(Modifier.height(SmithySpacing.gutter))
         Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
             Pill("编译 arm64-v8a", onCompile, icon = SmithyIcons.Run, enabled = ready)
-            // 没有工具链时给出两条**真能走的路**，而不是只写一句「缺工具链」：
-            // rootfs 是官方能直接下的那一条；本地包是眼下唯一能拿到 arm64 clang 的一条。
-            if (!ready) {
-                // 放最前面：**这才是「别的用户」的主路径** —— 装完 App 点一下就有编译器，
-                // 不用 root、不用电脑、不用懂 native-toolchain 是什么。
-                val tc = AddOnCatalog.toolchainClangArm64
-                val tcInstalled = addons?.installed(tc) != null
-                Pill(
-                    label = if (tcInstalled) {
-                        "工具链已装（${addons?.installed(tc)?.let { humanSize(it.bytes) } ?: ""}）"
-                    } else {
-                        "下载工具链包（${humanSize(tc.bytes)}）"
-                    },
-                    onClick = { onInstallComponent(tc.id) },
-                    icon = SmithyIcons.Download,
-                    enabled = !tcInstalled,
-                )
-                Pill("导入工具链包…", onImportComponent, icon = SmithyIcons.OpenFolder)
-                // 下面这条是要 root 的另一条路（Alpine rootfs + chroot 里装 clang）
-                Pill(
-                    label = if (rootfsInstalled) {
-                        "Alpine rootfs 已装（${addons?.installed(rootfs)?.let { humanSize(it.bytes) } ?: ""}）"
-                    } else {
-                        "下载 Alpine rootfs（${humanSize(rootfs.bytes)}）"
-                    },
-                    onClick = { onInstallComponent(rootfs.id) },
-                    icon = SmithyIcons.Download,
-                    enabled = !rootfsInstalled,
-                )
-                // 装了 rootfs、也有 root 的话，还有第三条更省事的路：在 rootfs 里装编译器
-                if (rootfsInstalled && ShellChannels.current()?.available() == true) {
-                    Pill("准备编译环境（在 rootfs 里装 clang）", onPrepareRootfs, icon = SmithyIcons.Package)
-                }
-            }
         }
         Spacer(Modifier.height(SmithySpacing.gap))
         if (ready) {
@@ -579,24 +545,39 @@ private fun NativeCard(
             // chroot 那条路还缺 target sysroot 的话，编译一定失败在缺 jni.h —— 先说清
             if (toolchain.name.contains("rootfs") && !sysrootInstalled) {
                 Spacer(Modifier.height(SmithySpacing.gap))
-                Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
-                    Pill(
-                        "下载 Android sysroot（arm64-v8a，下载 ${humanSize(sysrootAddon.bytes)}，" +
-                            "只留约 54MB）",
-                        { onInstallComponent(sysrootAddon.id) },
-                        icon = SmithyIcons.Download,
-                    )
-                }
+                WarningNote(
+                    "这条编译路还缺 Android sysroot（bionic 的头与桩库），现在编一定失败在「找不到 jni.h」。" +
+                        "到扩展中心把它装上。",
+                )
             }
         } else {
             // 和 module.build、以及 NativeToolchains.require() 的异常同一句话
             WarningNote(NativeToolchains.missingHint())
+            Spacer(Modifier.height(SmithySpacing.gap))
+            // 缺工具链时唯一该有的动作：**把人送到能装的地方**。装什么、多大、要 root
+            // 都在扩展中心那一页列清楚了，这儿不重复三套下载按钮。
+            Text(
+                "工具链（clang，约 154MB，装后约 370MB，免 root）在「设置 → 扩展」里，" +
+                    "点「安装全部」即可。装完回这里点「编译 arm64-v8a」。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(SmithySpacing.gap))
+            Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
+                Pill("去扩展中心装工具链", onGoToExtensions, icon = SmithyIcons.Download)
+                // 装了 rootfs、也有 root 的话，还有第三条更省事的路：在 rootfs 里装编译器
+                if (addons?.installed(AddOnCatalog.rootfsAlpine) != null &&
+                    ShellChannels.current()?.available() == true
+                ) {
+                    Pill("准备编译环境（在 rootfs 里装 clang）", onPrepareRootfs, icon = SmithyIcons.Package)
+                }
+            }
         }
         if (built.isNotEmpty()) {
             Spacer(Modifier.height(SmithySpacing.gap))
             Text(
                 "已编出：${built.joinToString()}",
-                style = SmithyRowMeta.copy(fontFamily = SmithyMono),
+                style = SmithyRowMeta.copy(fontFamily = dev.smithy.design.SmithyMono),
                 color = MaterialTheme.colorScheme.primary,
             )
         }

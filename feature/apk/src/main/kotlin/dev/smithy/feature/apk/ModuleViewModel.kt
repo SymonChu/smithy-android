@@ -351,6 +351,11 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
      *
      * 进度写进 [ModuleUiState.busy]：几百 MB 的下载必须看得见在动，
      * 否则用户会以为卡死然后去杀进程 —— 那正是「下了一半」的来源。
+     *
+     * **当前没有界面调用方**（2026-10-08 起组件的下载/卸载统一在「设置 → 扩展」那一页，
+     * 模块页只留一句「去扩展中心」的指引，避免两处入口让人怀疑是不是两套东西）。
+     * 保留是因为这条能力属于本 VM 的职责范围，扩展中心的 VM 走的是另一条更完整的路径
+     * （含分组、镜像 failover、导入本地包）；将来模块页要恢复就地安装时直接接上即可。
      */
     fun installComponent(id: String) {
         val mgr = AddOnHost.current()
@@ -371,9 +376,10 @@ class ModuleViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 装手机本地的一份归档。
      *
-     * 这是**目前唯一能装上 native 工具链的路**：给 arm64 安卓用的 clang 官方没有现成的
-     * （NDK 只有 x86_64/darwin/windows 宿主机版，LLVM 也不发 android 目标），
-     * 得在外面产出一份、传到手机上，再从这里灌进去。
+     * 这条**路本身仍然必需**（给 arm64 安卓用的 clang 官方没有现成的：NDK 只有
+     * x86_64/darwin/windows 宿主机版，LLVM 也不发 android 目标，得在外面产出一份、
+     * 传到手机上再灌进去），但 2026-10-08 起入口统一收到扩展中心那一页了。
+     * 与 [installComponent] 同样：当前没有界面调用方，保留作为能力备份。
      */
     fun importComponent(archive: File) {
         val mgr = AddOnHost.current()

@@ -413,6 +413,11 @@ fun SmithyRoot(
                     Tab.Apk -> ApkWorkbenchScreen(
                         incomingUri = incomingUri,
                         onIncomingConsumed = onIncomingConsumed,
+                        // 模块页缺工具链时不自己下载（那是扩展中心的事），只把人送过去
+                        onGoToExtensions = {
+                            settingsPage = SettingsPage.Extensions
+                            tab = Tab.Settings
+                        },
                     )
 
                     Tab.Chat -> {
