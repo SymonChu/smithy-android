@@ -15,6 +15,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -166,13 +167,15 @@ class OpenAiClientTest {
     }
 
     @Test
-    fun `404 会提示 baseUrl 不该带 chat_completions`() = runBlocking {
+    fun `404 会给出两种可用的填法`() = runBlocking {
         server.enqueue(sse(code = 404))
         val fail = client().stream(listOf(ChatMessage.user("hi")))
             .toList().filterIsInstance<ChatEvent.Failed>().single()
 
         assertEquals("BAD_ENDPOINT", fail.code)
-        // 这是 BYOK 用户最常犯的错：把完整接口路径当 baseUrl 填进去
+        // 地址从「必须填到 /v1」放宽成三种填法都行之后，404 的含义变了：
+        // 不再是「你填法不对」，而是「这个地址本身就找不到」。所以文案要给的是可用的写法，
+        // 不是替用户判断他填错了哪一档
         assertTrue(fail.message.contains("/v1"), "要给出正确的写法：${fail.message}")
     }
 
@@ -227,5 +230,88 @@ class OpenAiClientTest {
         val json = Json.encodeToJsonElement(ChatMessage.serializer(), m).jsonObject
         assertEquals("tool", json["role"]!!.jsonPrimitive.content)
         assertEquals("call_1", json["tool_call_id"]!!.jsonPrimitive.content)
+    }
+
+    // ── 上游不按 SSE 回：降级成一次性响应 ─────────────────────────
+
+    /** 一整段非流式响应（Content-Type 是 application/json，不是 text/event-stream）。 */
+    private fun whole(body: String) = MockResponse()
+        .setHeader("Content-Type", "application/json")
+        .setBody(body)
+
+    private fun wholeText(content: String) =
+        """{"choices":[{"message":{"role":"assistant","content":"$content"},"finish_reason":"stop"}]}"""
+
+    @Test
+    fun `网关不回 SSE 时自动降级成非流式`() = runBlocking {
+        // 现场：很多中转/自建反代收下 stream:true 却回一整段 application/json，
+        // 而 okhttp-sse 只认 text/event-stream，于是直接判失败 ——
+        // 用户看到的是「同一个地址我别处能用，怎么这里连不上」。
+        // 降级是这条差异的对策，所以两次响应都要排上
+        server.enqueue(whole(wholeText("改好了")))
+        server.enqueue(whole(wholeText("改好了")))
+
+        val events = client().stream(listOf(ChatMessage.user("改个名"))).toList()
+
+        assertEquals("改好了", events.filterIsInstance<ChatEvent.Text>().joinToString("") { it.delta })
+        assertTrue(
+            events.any { it is ChatEvent.Finished },
+            "降级这条路也必须收尾，否则界面永远停在「正在输入」",
+        )
+
+        val first = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        val second = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertTrue(first["stream"]!!.jsonPrimitive.boolean, "第一次仍是流式请求")
+        assertFalse(second["stream"]!!.jsonPrimitive.boolean, "降级那次必须显式要非流式")
+    }
+
+    @Test
+    fun `降级那次也能解析出工具调用`() = runBlocking {
+        val body = """{"choices":[{"message":{"role":"assistant","content":null,""" +
+            """"tool_calls":[{"id":"call_9","type":"function","function":{"name":"manifest.set",""" +
+            """"arguments":"{\"field\":\"APP_LABEL\"}"}}]},"finish_reason":"tool_calls"}]}"""
+        server.enqueue(whole(body))
+        server.enqueue(whole(body))
+
+        val calls = client()
+            .stream(listOf(ChatMessage.user("把应用名改掉")), tools = buildJsonArray { })
+            .toList()
+            .filterIsInstance<ChatEvent.ToolCalls>()
+            .single()
+            .calls
+
+        assertEquals(1, calls.size)
+        assertEquals("call_9", calls[0].id)
+        assertEquals("manifest.set", calls[0].function.name)
+        assertEquals(
+            "APP_LABEL",
+            Json.parseToJsonElement(calls[0].function.arguments).jsonObject["field"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `HTTP 错误不会触发降级重试`() = runBlocking {
+        // 只对「200 但不是 SSE」降级。4xx/5xx 再打一次结果一样，只会把一次失败变成两次，
+        // 还多花用户的时间和额度
+        server.enqueue(sse(code = 500))
+
+        val fail = client().stream(listOf(ChatMessage.user("hi")))
+            .toList().filterIsInstance<ChatEvent.Failed>().single()
+
+        assertEquals("UPSTREAM_DOWN", fail.code)
+        assertEquals(1, server.requestCount, "不该有第二次请求")
+    }
+
+    @Test
+    fun `不是 JSON 的响应会给出可读的失败`() = runBlocking {
+        // 典型现场：网关返回一个 HTML 错误页（200）。不翻译的话用户只会看到「模型没说话」
+        server.enqueue(whole("<html>502 Bad Gateway</html>"))
+        server.enqueue(whole("<html>502 Bad Gateway</html>"))
+
+        val fail = client().stream(listOf(ChatMessage.user("hi")))
+            .toList().filterIsInstance<ChatEvent.Failed>().single()
+
+        assertEquals("BAD_BODY", fail.code)
+        assertTrue(fail.message.contains("html"), "要把响应原文带出来一点：${fail.message}")
     }
 }

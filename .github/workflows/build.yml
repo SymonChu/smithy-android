@@ -54,6 +54,15 @@ jobs:
       - name: 设计系统测试（图标集结构）
         run: ./gradlew :core:design:testDebugUnitTest --stacktrace
 
+      # AI 客户端这层测的是**协议行为**（流式分片拼接、地址归一、上游不按 SSE 回时
+      # 的降级），用 MockWebServer 跑真请求。这类细节一旦回归，界面上只表现为
+      # 「连不上」，没有别的线索 —— 所以必须进 CI，而不是靠本地记得跑
+      - name: AI 客户端测试（地址归一 / 流式降级）
+        run: ./gradlew :core:ai:testDebugUnitTest --stacktrace
+
+      - name: 设置页测试（菜单结构）
+        run: ./gradlew :feature:settings:testDebugUnitTest --stacktrace
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:

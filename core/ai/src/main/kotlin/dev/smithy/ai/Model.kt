@@ -95,8 +95,21 @@ data class AiConfig(
      * 而 agent 循环会跑很多轮，每轮都开大预算会很快烧掉用户的额度。
      */
     val maxTokens: Int = 4096,
-) {
-    val normalizedBase: String get() = baseUrl.trimEnd('/')
 
-    val isUsable: Boolean get() = apiKey.isNotBlank() && model.isNotBlank() && normalizedBase.isNotBlank()
+    /**
+     * 跳过 TLS 证书校验（默认关）。
+     *
+     * 用途很具体：自建网关 / 局域网反代常挂**自签证书**，而 Android 的信任库不认它 ——
+     * 表现就是同一个地址在别处能用、在这里报
+     * `Trust anchor for certification path not found`，用户完全看不出是自己证书的事。
+     *
+     * **为什么默认关**：开了之后中间人替换证书客户端不再察觉，而这里传的是 API key。
+     * 所以它必须是一次显式的、看得见代价的选择，不能为了「少一个报错」默认打开。
+     */
+    val skipTlsVerify: Boolean = false,
+) {
+    /** 真正要 POST 的地址（宽容归一，见 [Endpoints]）。 */
+    val chatCompletionsUrl: String get() = Endpoints.chatCompletions(baseUrl)
+
+    val isUsable: Boolean get() = apiKey.isNotBlank() && model.isNotBlank() && chatCompletionsUrl.isNotBlank()
 }
