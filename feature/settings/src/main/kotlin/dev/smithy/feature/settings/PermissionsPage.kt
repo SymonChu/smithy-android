@@ -46,12 +46,14 @@ import dev.smithy.design.rememberSmithyHaptics
 fun PermissionsPage(
     state: ExtensionUiState,
     onRequestStorageAccess: () -> Unit,
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxWidth()) {
         SmithyTopBar(
             title = "权限",
             subtitle = "决定这台设备上你能碰到什么",
+            onBack = onBack,
         )
         Column(
             Modifier

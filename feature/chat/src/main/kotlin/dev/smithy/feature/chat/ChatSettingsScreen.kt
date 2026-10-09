@@ -32,6 +32,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.smithy.ai.AiConfig
+import dev.smithy.ai.Endpoints
 import dev.smithy.design.SmithyCard
 import dev.smithy.design.SmithyIconButton
 import dev.smithy.design.SmithyIcons
@@ -48,6 +49,13 @@ import dev.smithy.design.rememberSmithyHaptics
  *
  * 排版上这一页**不用 Card**（原来的三张 M3 默认 Card 是「示例工程」观感里最典型的一件）：
  * 分组靠 `SmithyCard` 的 surfaceContainerLow 底色 + 小标题，和文件页的分组语言一致。
+ *
+ * ── 这一页里两处「说得比一般设置页多」的地方，是有前因的 ──
+ *
+ * 1. **「实际请求」那一行**：用户填的地址要经过归一（补 `/v1/chat/completions`、
+ *    遇到完整路径就不再拼）。不显示出来，用户没法自查「我填的到底被请求到哪去了」——
+ *    而 404 的现场只有一句「接口地址不对」。
+ * 2. **公网明文地址的警告**：明文是整开的（见清单里的说明），代价就得在这儿说清。
  */
 @Composable
 fun ChatSettingsScreen(
@@ -56,10 +64,15 @@ fun ChatSettingsScreen(
     trustWrites: Boolean,
     onConfigChange: (AiConfig) -> Unit,
     onTrustWritesChange: (Boolean) -> Unit,
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize()) {
-        SmithyTopBar(title = "设置", subtitle = "AI 接口与写入门控")
+        SmithyTopBar(
+            title = "AI 接口",
+            subtitle = "网关 / key / 写入门控",
+            onBack = onBack,
+        )
         Column(
             Modifier
                 .fillMaxSize()
@@ -74,8 +87,21 @@ fun ChatSettingsScreen(
                 Field(
                     label = "地址",
                     value = config.baseUrl,
-                    hint = "形如 https://api.openai.com/v1，不要带 /chat/completions",
+                    hint = "填 https://host/v1、https://host，或整个接口路径 —— 三种都行",
                 ) { onConfigChange(config.copy(baseUrl = it)) }
+
+                // 归一后的地址。填法宽容了，就必须让用户看得见「到底请求到哪」——
+                // 不然地址相关的失败还是只能靠猜
+                Text(
+                    "实际请求：${config.chatCompletionsUrl.ifBlank { "（地址还没填）" }}",
+                    style = SmithyRowMeta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                Endpoints.plaintextWarning(config.baseUrl)?.let { warning ->
+                    WarningLine(warning)
+                }
+
                 Field(
                     label = "模型",
                     value = config.model,
@@ -87,6 +113,14 @@ fun ChatSettingsScreen(
                     secret = true,
                     hint = "只存在本机应用私有目录，不会上传到别处",
                 ) { onConfigChange(config.copy(apiKey = it)) }
+
+                ToggleRow(
+                    title = "跳过 TLS 校验",
+                    desc = "自建网关挂自签证书时用（Android 的信任库不认自签）。" +
+                        "开着的时候，别人换掉证书客户端也不会发现 —— 而这一页传的是你的 key，" +
+                        "所以只在自己搭的网关上开。",
+                    checked = config.skipTlsVerify,
+                ) { onConfigChange(config.copy(skipTlsVerify = it)) }
             }
 
             Group(title = "常用网关", hint = "点一下就把地址填进去") {
@@ -104,32 +138,14 @@ fun ChatSettingsScreen(
             }
 
             Group(title = "门控") {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("信任模式", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "开启后，改文案、改清单这类写入不再逐条问你；" +
-                                "装机、删除这类不可撤销的操作**仍然会问** —— " +
-                                "因为它们的后果回退不回来（包已经装到手机上了）。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(Modifier.width(SmithySpacing.gap))
-                    val haptics = rememberSmithyHaptics()
-                    // 开关拨动给触感：它是「以后不再问我」这种影响后续所有操作的决定，
-                    // 比普通勾选重一档
-                    Switch(
-                        checked = trustWrites,
-                        onCheckedChange = {
-                            haptics.toggle()
-                            onTrustWritesChange(it)
-                        },
-                    )
-                }
+                ToggleRow(
+                    title = "信任模式",
+                    desc = "开启后，改文案、改清单这类写入不再逐条问你；" +
+                        "装机、删除这类不可撤销的操作**仍然会问** —— " +
+                        "因为它们的后果回退不回来（包已经装到手机上了）。",
+                    checked = trustWrites,
+                    onChange = onTrustWritesChange,
+                )
             }
 
             Group(title = "当前状态") {
@@ -208,6 +224,64 @@ private fun Group(
                 content()
             }
         }
+    }
+}
+
+/**
+ * 开关行。
+ *
+ * 「已经开了但没生效」是这类安全开关最容易出的错，所以开关**与说明写在同一行内**
+ * （而不是开关一行、说明另一行）：说明里的代价和开关挨着，拨的时候一定会看到。
+ */
+@Composable
+private fun ToggleRow(
+    title: String,
+    desc: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                desc,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(SmithySpacing.gap))
+        val haptics = rememberSmithyHaptics()
+        // 开关拨动给触感：它是「以后不再问我」/「不再校验证书」这种影响后续所有操作的决定，
+        // 比普通勾选重一档
+        Switch(
+            checked = checked,
+            onCheckedChange = {
+                haptics.toggle()
+                onChange(it)
+            },
+        )
+    }
+}
+
+/** 需要用户知情的一行提醒（错色，但不拦）。 */
+@Composable
+private fun WarningLine(text: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Icon(
+            imageVector = SmithyIcons.Warning,
+            contentDescription = null,
+            modifier = Modifier.width(16.dp),
+            tint = MaterialTheme.colorScheme.error,
+        )
+        Spacer(Modifier.width(SmithySpacing.gap))
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
     }
 }
 

@@ -185,12 +185,14 @@ private fun Swatch(theme: SmithyTheme) {
 fun AppearancePage(
     current: SmithyTheme,
     onChange: (SmithyTheme) -> Unit,
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxWidth()) {
         SmithyTopBar(
             title = "外观",
             subtitle = "主题色板",
+            onBack = onBack,
         )
         Column(
             Modifier

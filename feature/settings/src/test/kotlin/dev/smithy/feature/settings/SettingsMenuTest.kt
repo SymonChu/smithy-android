@@ -37,9 +37,9 @@ class SettingsMenuTest {
     }
 
     @Test
-    fun `默认落在外观页`() {
-        // 主题是唯一「改完立刻能看到效果」的设置，放第一页最省事。
-        // 改这条时要一并改 MainActivity 里的默认值
+    fun `菜单第一项是外观`() {
+        // 0.1.6 起设置是「竖列菜单 → 整页」两级，进设置先看菜单，不再默认落在某一页
+        // （默认进一页的话，另外三页的入口就藏在返回里）。这里钉的是菜单里的排位
         assertEquals("外观", SettingsPage.entries.first().label)
     }
 }

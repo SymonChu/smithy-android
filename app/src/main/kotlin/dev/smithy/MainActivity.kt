@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import android.content.Intent
 import android.net.Uri
@@ -49,6 +50,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.smithy.ai.AiConfig
 import dev.smithy.design.SmithyIcons
 import dev.smithy.design.SmithyMotion
 import dev.smithy.design.SmithyTheme
@@ -61,9 +63,7 @@ import dev.smithy.feature.chat.ChatViewModel
 import dev.smithy.feature.files.FilesScreen
 import dev.smithy.feature.files.StorageAccess
 import dev.smithy.feature.files.FilesViewModel
-import dev.smithy.feature.settings.ExtensionsScreen
 import dev.smithy.feature.settings.ExtensionsViewModel
-import dev.smithy.feature.settings.ExtensionUiState
 import dev.smithy.feature.settings.SettingsHome
 import dev.smithy.feature.settings.SettingsPage
 
@@ -261,9 +261,14 @@ fun SmithyRoot(
 
     val haptics = rememberSmithyHaptics()
 
-    // 设置里四页。默认落在「外观」——主题是唯一「改完立刻能看到效果」的设置，
-    // 放在第一页最省事；而 AI 接口是要反复改的，不该占着第一眼
-    var settingsPage by remember { mutableStateOf(SettingsPage.Appearance) }
+    // 设置是「竖列菜单 → 整页」两级：null = 停在菜单上。
+    // 不从任何一页开始 —— 默认进某一页的话，另外三页的入口就藏在返回里，
+    // 而它们没有主次之分（四页都是低频、各自独立的设置）
+    var settingsPage by remember { mutableStateOf<SettingsPage?>(null) }
+
+    // 在设置的二级页里，系统返回键先回菜单，而不是直接退出 App
+    BackHandler(enabled = tab == Tab.Settings && settingsPage != null) { settingsPage = null }
+
     val extVm = remember { ExtensionsViewModel(app) }
     val extState by extVm.state.collectAsState()
 
@@ -461,6 +466,7 @@ fun SmithyRoot(
                         page = settingsPage,
                         state = extState,
                         palette = palette,
+                        aiSummary = aiSummaryOf(chatState.config, chatState.configProblem),
                         onPaletteChange = onPaletteChange,
                         onSelect = { settingsPage = it },
                         onConfigChange = chatVm::onConfigChange,
@@ -472,15 +478,16 @@ fun SmithyRoot(
                         onImportExtension = { pickLocalPackage.launch(arrayOf("*/*")) },
                         onDismissNotice = extVm::dismissNotice,
                         onRequestStorageAccess = requestStorageAccess,
-                        // AI 接口页还是 ChatSettingsScreen（原样搬过来）—— feature:settings 不依赖
+                        // AI 接口那一页是 ChatSettingsScreen —— feature:settings 不依赖
                         // feature:chat（否则两模块互相依赖），所以由 app 层把它作为内容传进来
-                        aiPage = { m ->
+                        aiPage = { m, back ->
                             ChatSettingsScreen(
                                 config = chatState.config,
                                 problem = chatState.configProblem,
                                 trustWrites = chatState.trustWrites,
                                 onConfigChange = chatVm::onConfigChange,
                                 onTrustWritesChange = chatVm::setTrustWrites,
+                                onBack = back,
                                 modifier = m,
                             )
                         },
@@ -490,3 +497,12 @@ fun SmithyRoot(
         }
     }
 }
+
+/**
+ * 设置菜单里「AI 接口」那一行的现状。
+ *
+ * 配置没齐时**直接说缺什么**（和 AI 页里的那句同一份文案来源）：菜单上写「未配置」，
+ * 用户还得点进去才知道是缺 key 还是缺地址 —— 而这一行的用处正是「值不值得点进去」。
+ */
+private fun aiSummaryOf(config: AiConfig, problem: String?): String =
+    problem ?: "已配好 · ${config.model}"
