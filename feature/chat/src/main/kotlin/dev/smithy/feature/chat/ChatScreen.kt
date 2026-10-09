@@ -3,6 +3,9 @@ package dev.smithy.feature.chat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -28,6 +31,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -40,12 +44,17 @@ import androidx.compose.material3.Surface
 import dev.smithy.design.SmithyMono
 import dev.smithy.design.SmithySpacing
 import dev.smithy.design.SmithyEmptyState
+import dev.smithy.design.smithyEmphasis
+import dev.smithy.design.SmithyDialogTitle
 import dev.smithy.design.SmithyIconButton
 import dev.smithy.design.SmithyIcons
 import dev.smithy.design.SmithyMotion
 import dev.smithy.design.SmithyNumeric
 import dev.smithy.design.SmithyRowMeta
 import dev.smithy.design.rememberSmithyHaptics
+import dev.smithy.engine.CheckLevel
+import dev.smithy.toolkit.Skill
+import dev.smithy.toolkit.Skills
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -80,9 +89,12 @@ fun ChatScreen(
     onAttach: () -> Unit,
     onClear: () -> Unit,
     onConfirm: (Boolean) -> Unit,
+    /** 点了一张技能卡：由 VM 决定是走固定流程还是给一条引导。 */
+    onRunSkill: (Skill) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
+    var showAllSkills by remember { mutableStateOf(false) }
 
     // 新内容进来就滚到底：AI 在流式输出，用户不该自己去追
     LaunchedEffect(state.items.size) {
@@ -141,7 +153,22 @@ fun ChatScreen(
             )
         }
 
+        // 技能条：一条技能就是一套固定流程（侦查 → 改动 → 验证）。
+        // 放在输入框上方而不是藏进菜单 —— 它是「不知道说什么」时的入口，
+        // 而「不知道说什么」恰好发生在看着输入框的时候。
+        SkillBar(
+            skills = state.skills,
+            active = state.activeSkill,
+            running = state.running,
+            onRun = onRunSkill,
+            onShowAll = { showAllSkills = true },
+        )
+
         InputBar(state.input, state.running, onInput, onSend, onStop)
+    }
+
+    if (showAllSkills) {
+        SkillSheet(onDismiss = { showAllSkills = false }, onRun = { showAllSkills = false; onRunSkill(it) })
     }
 }
 
@@ -340,6 +367,7 @@ private fun Item(item: ChatItem) = when (item) {
     is ChatItem.Assistant -> AssistantBubble(item)
     is ChatItem.Tool -> ToolCard(item)
     is ChatItem.Notice -> NoticeRow(item)
+    is ChatItem.Inspection -> InspectionCard(item)
     is ChatItem.Confirm -> Unit    // 确认条固定在底部，不在列表里重复显示
 }
 
@@ -638,6 +666,24 @@ private fun ConfirmBar(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
             )
+            // 「影响」一行：门控要用户答的是**后果**，而他此刻看得到的是工具名和参数。
+            // 把后果写成一句话，比让他自己从工具名推要可靠 —— 尤其是两者看起来差不多的时候
+            Spacer(Modifier.height(4.dp))
+            Text(
+                smithyEmphasis(
+                    if (destructive) {
+                        "影响：批准后**回退不回来**（包已经装到手机上 / 条目已经删掉）"
+                    } else {
+                        "影响：只写进工作区覆盖层，原包不动，之后可以逐条回退"
+                    },
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (destructive) {
+                    MaterialTheme.colorScheme.onErrorContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
             Spacer(Modifier.height(SmithySpacing.gap + 2.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
                 // 「允许」带确认触感、「拒绝」带警示触感：这是门控，答错了代价最大，
@@ -672,6 +718,295 @@ private fun ConfirmBar(
             }
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 体检卡与技能
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * 体检卡：打开包之后直接摆进对话流的那张结论卡。
+ *
+ * 「结论一行 + 逐条判据」的排法：结论是给**要不要动手**用的，判据是给「凭什么这么说」用的。
+ * 顺序反过来的话，用户得先读六行才能知道自己该不该继续。
+ */
+@Composable
+private fun InspectionCard(item: ChatItem.Inspection) {
+    val health = item.health
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(SmithySpacing.cardPadding)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = levelIcon(health.level),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = levelTint(health.level),
+                )
+                Spacer(Modifier.width(SmithySpacing.gap))
+                Text(
+                    "体检 · ${item.name}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            Spacer(Modifier.height(SmithySpacing.gap))
+            Text(
+                smithyEmphasis(health.headline),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (health.level == CheckLevel.BAD) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+            )
+            health.detail?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Spacer(Modifier.height(SmithySpacing.gap))
+            health.items.forEach { h ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
+                    Icon(
+                        imageVector = levelIcon(h.level),
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp).padding(top = 2.dp),
+                        tint = levelTint(h.level),
+                    )
+                    Spacer(Modifier.width(SmithySpacing.gap))
+                    Text(
+                        h.group,
+                        style = SmithyRowMeta,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(52.dp),
+                    )
+                    Spacer(Modifier.width(SmithySpacing.gap))
+                    Text(
+                        smithyEmphasis(h.text),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (h.level == CheckLevel.BAD) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            health.next?.let {
+                Spacer(Modifier.height(SmithySpacing.gap))
+                Text(smithyEmphasis(it), style = SmithyRowMeta, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/**
+ * 技能条：输入框上方那一排。
+ *
+ * 横向滚动而不是压成两行：技能数量会变，而每个名字都得看得完整
+ * （「去签名校验」截成「去签名…」就分不清它和「装机验证」）。
+ */
+@Composable
+private fun SkillBar(
+    skills: List<Skill>,
+    active: Skill?,
+    running: Boolean,
+    onRun: (Skill) -> Unit,
+    onShowAll: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(bottom = 2.dp)) {
+        Text(
+            "技能（点一张按固定流程走）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = SmithySpacing.gutter, bottom = 6.dp),
+        )
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                .padding(horizontal = SmithySpacing.gutter),
+            horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
+        ) {
+            skills.forEach { skill ->
+                SkillChip(
+                    label = skill.title,
+                    icon = skillIcon(skill.id),
+                    active = active?.id == skill.id,
+                    enabled = !running,
+                    onClick = { onRun(skill) },
+                )
+            }
+            SkillChip(
+                label = "全部…",
+                icon = SmithyIcons.More,
+                active = false,
+                enabled = true,
+                onClick = onShowAll,
+            )
+        }
+    }
+}
+
+/** 一张技能卡（药丸）。 */
+@Composable
+private fun SkillChip(
+    label: String,
+    icon: ImageVector,
+    active: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val haptics = rememberSmithyHaptics()
+    Surface(
+        color = if (active) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        shape = RoundedCornerShape(99.dp),
+        modifier = Modifier.clickable(enabled = enabled) {
+            haptics.tap()
+            onClick()
+        },
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(15.dp),
+                tint = if (active) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (active) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+    }
+}
+
+/**
+ * 全部技能。
+ *
+ * 每条都标出**只读还是会改动**：点之前该知道这条技能会不会动文件。
+ * 引导型（如换图标）写明「要在工作台里做」，而不是让它看起来点了就能跑。
+ */
+@Composable
+private fun SkillSheet(onDismiss: () -> Unit, onRun: (Skill) -> Unit) {
+    val haptics = rememberSmithyHaptics()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = MaterialTheme.shapes.extraLarge,
+        title = { SmithyDialogTitle(icon = SmithyIcons.Run, text = "技能") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(SmithySpacing.gap),
+            ) {
+                Text(
+                    "一条技能 = 一套固定流程（侦查 → 改动 → 验证）。点一下就走完，不用自己想措辞。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Skills.all.forEach { skill ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            haptics.tap()
+                            onRun(skill)
+                        },
+                    ) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
+                            Icon(
+                                imageVector = skillIcon(skill.id),
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.width(SmithySpacing.iconGap))
+                            Column(Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(skill.title, style = MaterialTheme.typography.titleSmall)
+                                    Spacer(Modifier.width(SmithySpacing.gap))
+                                    Text(
+                                        if (skill.readOnly) "只读" else "会改动",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (skill.readOnly) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
+                                }
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    skill.summary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@Composable
+private fun levelTint(level: CheckLevel): Color = when (level) {
+    CheckLevel.OK -> MaterialTheme.colorScheme.primary
+    CheckLevel.WARN -> MaterialTheme.colorScheme.onSurfaceVariant
+    CheckLevel.BAD -> MaterialTheme.colorScheme.error
+}
+
+private fun levelIcon(level: CheckLevel): ImageVector = when (level) {
+    CheckLevel.OK -> SmithyIcons.Check
+    CheckLevel.WARN -> SmithyIcons.Info
+    CheckLevel.BAD -> SmithyIcons.Warning
+}
+
+/**
+ * 技能 → 图标。
+ *
+ * 用**固定的映射**而不是让每条技能自己带一个图标：技能表在 toolkit（不认识 compose），
+ * 图标是界面层的东西。多一层映射换来的是「技能表里加一条技能」不必碰界面代码。
+ */
+private fun skillIcon(id: String): ImageVector = when (id) {
+    "inspect" -> SmithyIcons.Permission
+    "text" -> SmithyIcons.Rename
+    "rename" -> SmithyIcons.KindCode
+    "localize" -> SmithyIcons.Files
+    "killverify" -> SmithyIcons.Rule
+    "ship" -> SmithyIcons.Download
+    "icon" -> SmithyIcons.KindPicture
+    else -> SmithyIcons.Run
 }
 
 /**

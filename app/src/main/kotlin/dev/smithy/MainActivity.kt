@@ -459,6 +459,7 @@ fun SmithyRoot(
                             onAttach = { pickApkForChat.launch(arrayOf("*/*")) },
                             onClear = chatVm::clear,
                             onConfirm = chatVm::answerConfirm,
+                            onRunSkill = chatVm::runSkill,
                         )
                     }
 

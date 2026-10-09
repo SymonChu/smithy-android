@@ -11,11 +11,18 @@ import dev.smithy.ai.ChatMessage
 import dev.smithy.ai.DEFAULT_SYSTEM_PROMPT
 import dev.smithy.ai.OpenAiClient
 import dev.smithy.ai.SessionStore
+import dev.smithy.engine.ApkHealthCheck
+import dev.smithy.engine.ApkHealth
+import dev.smithy.engine.ApkProject
 import dev.smithy.engine.ApkProjects
+import dev.smithy.fs.InstalledApp
+import dev.smithy.design.withoutEmphasis
 import dev.smithy.toolkit.ConfirmPolicy
 import dev.smithy.toolkit.ConfirmRequest
 import dev.smithy.toolkit.Effect
 import dev.smithy.toolkit.NoWorkspaceException
+import dev.smithy.toolkit.Skill
+import dev.smithy.toolkit.Skills
 import dev.smithy.toolkit.ToolContext
 import dev.smithy.toolkit.WorkspaceHolder
 import dev.smithy.toolkit.defaultRegistry
@@ -73,6 +80,18 @@ sealed interface ChatItem {
         val summary: String,
         val destructive: Boolean,
     ) : ChatItem
+
+    /**
+     * 体检卡。
+     *
+     * 它是**本地扫描的结论**，不是模型的输出：打开包的那一刻就能算出来（不解包、不联网、
+     * 不花 token），所以直接插进对话流 —— 用户问「能改吗」时，答案已经在屏幕上了。
+     */
+    data class Inspection(
+        override val id: Long,
+        val name: String,
+        val health: ApkHealth,
+    ) : ChatItem
 }
 
 data class ChatUiState(
@@ -84,6 +103,17 @@ data class ChatUiState(
     val configProblem: String? = null,
     /** 当前工作区名字（null = 没打开包） */
     val workspaceName: String? = null,
+
+    /** 可选技能（固定流程）。界面上是输入框上方那一排。 */
+    val skills: List<Skill> = Skills.quickPicks,
+
+    /**
+     * 这一轮正在走哪条技能（null = 自由对话）。
+     *
+     * 它决定**挂哪些工具**：技能只挂这条流程要用的那几个。49 个工具全挂给模型时，
+     * 它会挑看起来差不多的那个（改文案时去动 dex、顺手改别的字段）。
+     */
+    val activeSkill: Skill? = null,
 
     /** 信任模式：开着的话 WRITE 级工具不再逐条问（DESTRUCTIVE 仍然问） */
     val trustWrites: Boolean = false,
@@ -218,8 +248,63 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onInput(text: String) = _state.update { it.copy(input = text) }
 
-    /** 切回对话页时调一下：工作区可能在工作台里换了包。 */
-    fun refreshWorkspace() = _state.update { it.copy(workspaceName = WorkspaceHolder.currentName) }
+    /**
+     * 切回对话页时调一下：工作区可能在工作台里换了包。
+     *
+     * 换了包就**补一张体检卡**：两条入口（对话里选包 / 工作台里开包）应该看到同一份结论，
+     * 否则用户会以为「在工作台开的包没有体检」。
+     */
+    fun refreshWorkspace() {
+        val name = WorkspaceHolder.currentName
+        if (name == _state.value.workspaceName) return
+        _state.update { it.copy(workspaceName = name) }
+
+        val project = WorkspaceHolder.current ?: return
+        viewModelScope.launch { addItem(inspectionCard(project, name.orEmpty())) }
+    }
+
+    /**
+     * 体检卡：读条目名 + meta 就能算出来，**不调模型、不联网**。
+     *
+     * 放在这一层而不是引擎里，是因为「已装版本是谁签的」要问 PackageManager
+     * （引擎是纯 JVM，拿不到），而签名冲突恰好是装机时唯一会撞的墙。
+     */
+    private suspend fun inspectionCard(project: ApkProject, name: String): ChatItem.Inspection = withContext(Dispatchers.IO) {
+        val meta = project.meta
+        val entries = runCatching { project.list().map { it.path } }.getOrDefault(emptyList())
+        val installedCert = runCatching {
+            InstalledApp.certSha256(getApplication(), meta.packageName)
+        }.getOrNull()
+        ChatItem.Inspection(id(), name, ApkHealthCheck.of(meta, entries, installedCert))
+    }
+
+    /**
+     * 走一条技能。
+     *
+     * 三件事必须按顺序做：**先确认能不能跑**（有包、配置齐），再上屏（用户气泡 + 体检式提示），
+     * 最后才起一轮。反过来会出现「气泡已经上屏、结果什么都没有」。
+     *
+     * 纯引导型技能（如换图标）不调模型：它需要选图，只能在界面上做 ——
+     * 把这件事说明白，比让模型假装能做要诚实。
+     */
+    fun runSkill(skill: Skill) {
+        if (_state.value.running) return
+
+        if (skill.tools.isEmpty()) {
+            addItem(ChatItem.Notice(id(), skill.guide ?: "这条技能要在工作台里做"))
+            return
+        }
+        if (WorkspaceHolder.current == null) {
+            addItem(ChatItem.Notice(id(), "还没打开包：点输入框右边的回形针选一个 APK", isError = true))
+            return
+        }
+        if (!ensureReady()) return
+
+        _state.update { it.copy(activeSkill = skill) }
+        addItem(ChatItem.User(id(), "技能：${skill.title}"))
+        history += ChatMessage.user(skill.prompt)
+        startRound()
+    }
 
     fun onConfigChange(config: AiConfig) {
         configStore.save(config)
@@ -273,14 +358,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
                 val project = ApkProjects.open(file)
                 WorkspaceHolder.set(project, file.name)
+
+                // 打开包就体检：这一行的结论（能不能改、改完能不能装）是后面所有动作的前提，
+                // 而且它是本地算的 —— 不花 token、不等模型
+                val card = inspectionCard(project, file.name)
                 _state.update { s ->
                     s.copy(
                         busy = null,
                         workspaceName = file.name,
-                        message = "已打开「${file.name}」，可以让我改它了",
+                        // 状态条是单行纯文本，渲染不了加粗 —— 把强调标记去掉，
+                        // 否则屏幕上会出现两个星号
+                        message = "已打开「${file.name}」：${card.health.headline.withoutEmphasis()}",
                         isError = false,
                     )
                 }
+                addItem(card)
             } catch (t: Throwable) {
                 _state.update { it.copy(busy = null, message = t.message ?: "打不开这个文件", isError = true) }
             }
@@ -295,18 +387,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send() {
         val text = _state.value.input.trim()
         if (text.isEmpty() || _state.value.running) return
+        if (!ensureReady()) return
 
-        val config = _state.value.config
-        configStore.validate(config)?.let { problem ->
-            addItem(ChatItem.Notice(id(), problem, isError = true))
-            return
-        }
-
-        _state.update { it.copy(input = "", running = true) }
+        // 自由对话不带技能限制：用户自己说什么，就挂全部工具
+        _state.update { it.copy(activeSkill = null) }
         addItem(ChatItem.User(id(), text))
         history += ChatMessage.user(text)
+        startRound()
+    }
 
-        val agent = AgentLoop(OpenAiClient(config), registry, systemPrompt = systemPrompt())
+    /**
+     * 配置不齐时**直接说缺什么**，不要发一个请求再翻译 401 ——
+     * 那要多等一个往返，错误信息还绕。
+     */
+    private fun ensureReady(): Boolean {
+        val problem = configStore.validate(_state.value.config)
+        if (problem != null) {
+            addItem(ChatItem.Notice(id(), problem, isError = true))
+            return false
+        }
+        return true
+    }
+
+    /** 起一轮 Agent。挂哪些工具由当前技能决定（[ChatUiState.activeSkill]）。 */
+    private fun startRound() {
+        val config = _state.value.config
+        val skill = _state.value.activeSkill
+        _state.update { it.copy(input = "", running = true) }
+
+        val agent = AgentLoop(
+            OpenAiClient(config),
+            registry,
+            systemPrompt = systemPrompt(),
+            allowedTools = skill?.tools?.toSet(),
+        )
         val ctx = UiToolContext()
 
         job = viewModelScope.launch {

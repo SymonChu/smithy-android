@@ -29,6 +29,14 @@ class AgentLoop(
     private val registry: DefaultToolRegistry,
     private val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     private val maxRounds: Int = 12,
+    /**
+     * 只挂这些工具（null = 全部）。
+     *
+     * 「技能」用一套固定流程，就该只看见这条流程要用的工具：49 个工具全挂给模型时，
+     * 它会挑看起来差不多的那个（改文案时去动 dex、或者顺手改了别的字段）。
+     * 收窄工具面比在提示里反复叮嘱有效。
+     */
+    private val allowedTools: Set<String>? = null,
 ) {
 
     fun run(history: List<ChatMessage>, ctx: ToolContext): Flow<AgentEvent> = flow {
@@ -48,7 +56,7 @@ class AgentLoop(
             // 长对话会撞上下文上限。压缩只截短长的工具结果、不改消息条数，
             // 所以 assistant 的 tool_calls 与 tool 结果的配对不会被打散
             val outgoing = ContextCompactor.compact(messages)
-            client.stream(outgoing, registry.toOpenAiSchema()).collect { ev ->
+            client.stream(outgoing, registry.toOpenAiSchema(allowedTools)).collect { ev ->
                 when (ev) {
                     is ChatEvent.Text -> {
                         text.append(ev.delta)
