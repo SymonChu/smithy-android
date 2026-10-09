@@ -19,6 +19,7 @@ import dev.smithy.engine.InstallChannel
 import dev.smithy.engine.InstallResult
 import dev.smithy.engine.InstallVia
 import dev.smithy.engine.ManifestField
+import dev.smithy.engine.PackerDetect
 import dev.smithy.engine.PatchRecord
 import dev.smithy.engine.PatchOrigin
 import dev.smithy.engine.ReplaceScope
@@ -926,6 +927,9 @@ internal class ApkProjectImpl(
             val manifest = runCatching { module.getAndroidManifest() }.getOrNull()
             val dexStats = readDexStats(zip)
             val signatures = readSignatures(apkFile)
+            // 条目名一次取出来：加固特征（so / assets 名单）要按名字匹配，
+            // 而它是「这个包能不能改」的第一号判据（见 ApkHealth）
+            val entryNames = zip.entries().asSequence().map { it.name }.toList()
 
             val meta = ApkMeta(
                 sourcePath = apkFile.absolutePath,
@@ -941,6 +945,7 @@ internal class ApkProjectImpl(
                 dexStats = dexStats,
                 sizeBytes = apkFile.length(),
                 isSplit = runCatching { manifest?.isSplit == true }.getOrDefault(false),
+                packerGuess = PackerDetect.guess(entryNames),
             )
 
             ApkProjectImpl(workspaceId, apkFile, module, zip, meta, keystoreDir, installChannel)
