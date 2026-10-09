@@ -6,7 +6,10 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.smithy.engine.ApkEntry
+import dev.smithy.engine.ApkHealth
+import dev.smithy.engine.ApkHealthCheck
 import dev.smithy.engine.ApkMeta
+import dev.smithy.engine.CheckLevel
 import dev.smithy.engine.ApkProject
 import dev.smithy.engine.ApkProjects
 import dev.smithy.engine.ApkReport
@@ -15,11 +18,14 @@ import dev.smithy.engine.DexQuery
 import dev.smithy.engine.InstallVia
 import dev.smithy.engine.ManifestField
 import dev.smithy.engine.PatchRecord
+import dev.smithy.engine.ProductReport
+import dev.smithy.engine.ProductVerify
 import dev.smithy.engine.ReplaceScope
 import dev.smithy.engine.ResourceEntry
 import dev.smithy.engine.SignConfig
 import dev.smithy.engine.StringReplacement
 import dev.smithy.engine.WorkspaceState
+import dev.smithy.fs.InstalledApp
 import dev.smithy.toolkit.WorkspaceHolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -108,6 +114,22 @@ data class WorkbenchUiState(
     val rebuiltPath: String? = null,
     val signedPath: String? = null,
 
+    /**
+     * 打开时做的体检（加固 / 签名 / 结构 / ABI / 模块特征）。
+     *
+     * 打开包就该知道「能不能改、改完能不能装」，而不是装到手机上才发现 ——
+     * 这份结论文档 [dev.smithy.engine.ApkHealthCheck] 里有逐条判据。
+     */
+    val health: ApkHealth? = null,
+
+    /**
+     * 产物验证结论（清单/资源表/签名/对齐/装机冲突）。
+     *
+     * 打包+签名后**自动跑**，不靠用户记得点：这五条查的都是装机那一刻才会暴露的东西
+     * （对齐丢了会报 `res=-2`、包名没落进去会装成旧版本）。
+     */
+    val product: ProductReport? = null,
+
     /** 正在进行的事（按钮据此置灰）。null = 空闲。 */
     val busy: String? = null,
     /** 最近一次动作的结果，直接展示给用户 */
@@ -125,6 +147,14 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
 
     private var opened: ApkProject? = null
+
+    /**
+     * 手机上已装那个包的证书 SHA-256。
+     *
+     * 打开包时查一次就存下来：它是「装机要不要先卸载」的判据，而验证产物可能被点很多次，
+     * 每次都去问 PackageManager 没必要。换包时跟着换。
+     */
+    private var installedCertSha256: String? = null
 
     /** 签名密钥必须放在持久位置：指纹一变，改过的包就装不上（见 docs/08） */
     private fun keystoreDir(): File =
@@ -145,11 +175,17 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                     keystoreDir = keystoreDir(),
                     installChannel = InstallChannelRegistry.install,
                 )
-                val count = project.list().size
+                val entries = project.list()
+                val count = entries.size
 
                 closeCurrent()
                 opened = project
                 val meta = project.meta
+
+                // 体检在**打开时**做，而不是等用户点了什么才做：
+                // 「这个包能不能改、改完能不能装」是决定要不要动手的前提（见 ApkHealth）
+                installedCertSha256 = InstalledApp.certSha256(getApplication(), meta.packageName)
+                val health = ApkHealthCheck.of(meta, entries.map { it.path }, installedCertSha256)
                 // 告诉对话层现在操作的是哪个包 —— 两边必须是同一个工程实例，
                 // 否则 AI 改的东西用户在这个改动列表里看不到（各开一份会得到两份覆盖层）
                 WorkspaceHolder.set(project, name)
@@ -159,6 +195,7 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                     meta = meta,
                     entryCount = count,
                     workspaceState = project.state,
+                    health = health,
                     // 改名/版本的输入框用当前值打底，用户只需改动他要改的那个
                     editLabel = meta.appLabel,
                     editVersionName = meta.versionName,
@@ -316,13 +353,18 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val out = project.sign(SignConfig())
                 val verify = project.verify(out)
+                // 验签过了不等于产物自洽（对齐、包名有没有落进去都在另一套检查里），
+                // 所以紧跟着跑一遍产物验证 —— 用户不用记得再点一下
+                val report = verifyProductInternal(out)
                 _state.update {
                     it.copy(
                         busy = null,
                         signedPath = out.absolutePath,
+                        product = report,
                         workspaceState = project.state,
                         message = if (verify.valid) {
-                            "已签名并通过验签（方案 ${verify.schemes.joinToString("/") { n -> "v$n" }}）"
+                            "已签名并通过验签（方案 ${verify.schemes.joinToString("/") { n -> "v$n" }}）· " +
+                                productSummary(report)
                         } else {
                             "签名完成，但验签没过：${verify.messages.firstOrNull() ?: "原因未知"}"
                         },
@@ -333,6 +375,113 @@ class ApkWorkbenchViewModel(app: Application) : AndroidViewModel(app) {
                 fail(t)
             }
         }
+    }
+
+    /**
+     * 一键：**打包 → 签名 → 验证 → 装机**。
+     *
+     * 这四步在界面上原来是四个按钮（重打包/签名/安装 + 自己记得顺序），
+     * 而它们的顺序是**不可颠倒的**（签名签的是上一次打包的产物）—— 让用户记住这件事
+     * 本身就是设计缺陷。分步入口保留在下面的次级菜单里：排查问题时需要单步跑。
+     *
+     * 验证不通过就**不装**：产物不自洽时安装只会把「失败」从工作台推到手机桌面，
+     * 而那时用户能拿到的信息更少。
+     */
+    fun buildSignInstall() {
+        val project = opened ?: return
+        if (_state.value.patches.isEmpty()) {
+            _state.update { it.copy(message = "还没有改动：先在概览 / 代码 / 资源里改点什么", isError = true) }
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                _state.update { it.copy(busy = "重打包…", message = null, isError = false) }
+                val unsigned = project.rebuild()
+
+                _state.update {
+                    it.copy(busy = "签名…", rebuiltPath = unsigned.absolutePath, workspaceState = project.state)
+                }
+                val signed = project.sign(SignConfig())
+
+                _state.update {
+                    it.copy(busy = "验证产物…", signedPath = signed.absolutePath, workspaceState = project.state)
+                }
+                val report = verifyProductInternal(signed)
+                if (!report.canInstall) {
+                    val bad = report.checks.first { it.level == CheckLevel.BAD }
+                    _state.update {
+                        it.copy(
+                            busy = null,
+                            product = report,
+                            message = "产物有问题，先别装：${bad.detail}",
+                            isError = true,
+                        )
+                    }
+                    return@launch
+                }
+
+                _state.update { it.copy(busy = "安装…", product = report) }
+                val r = project.install(signed, InstallVia.SHIZUKU)
+                _state.update {
+                    it.copy(
+                        busy = null,
+                        workspaceState = project.state,
+                        product = report,
+                        message = when {
+                            r.ok && r.pending -> r.message ?: "已交给系统安装器"
+                            r.ok -> "已装机（通道：${viaLabel(r.via)}）· ${productSummary(report)}"
+                            else -> r.message ?: "安装失败"
+                        },
+                        isError = !r.ok,
+                    )
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /** 单独验证当前产物（打了包还没签、或想再看一眼时用）。 */
+    fun verifyProduct() {
+        val project = opened ?: return
+        val target = (_state.value.signedPath ?: _state.value.rebuiltPath)?.let(::File)
+        if (target == null || !target.isFile) {
+            _state.update { it.copy(message = "还没有产物：先打包（或直接用「打包并装机」）", isError = true) }
+            return
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(busy = "验证产物…", message = null, isError = false) }
+            try {
+                val report = verifyProductInternal(target)
+                _state.update {
+                    it.copy(busy = null, product = report, message = productSummary(report), isError = !report.canInstall)
+                }
+            } catch (t: Throwable) {
+                fail(t)
+            }
+        }
+    }
+
+    /**
+     * 跑一遍产物验证。期望值取**工程当前状态**（而不是打包时的快照）：
+     * 用户可能在打包后又改了一处，那时产物的确与当前状态不一致 —— 这正是要报出来的事。
+     */
+    private suspend fun verifyProductInternal(apk: File): ProductReport {
+        val meta = _state.value.meta
+        return ProductVerify.of(
+            apk = apk,
+            expectedPackage = meta?.packageName,
+            expectedLabel = meta?.appLabel,
+            installedCertSha256 = installedCertSha256,
+        )
+    }
+
+    private fun productSummary(report: ProductReport): String = when {
+        !report.canInstall -> "产物有问题（见验证卡）"
+        report.warnCount > 0 -> "产物验证 ${report.checks.size} 项，其中 ${report.warnCount} 项要留意"
+        else -> "产物验证 ${report.checks.size} 项全过"
     }
 
     /**

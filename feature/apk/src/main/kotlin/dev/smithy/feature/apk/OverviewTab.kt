@@ -35,6 +35,7 @@ import dev.smithy.design.SmithyRowMeta
 import dev.smithy.design.SmithyRowTitle
 import dev.smithy.design.SmithySpacing
 import dev.smithy.engine.ApkMeta
+import dev.smithy.engine.ApkHealth
 import dev.smithy.engine.ComponentInfo
 import dev.smithy.engine.DexStat
 
@@ -57,6 +58,8 @@ fun OverviewTab(
     sourceName: String,
     entryCount: Int,
     meta: ApkMeta,
+    /** 打开包时做的体检；null = 还没做（理论上不会有，留个空以免强转） */
+    health: ApkHealth? = null,
     editLabel: String,
     editVersionName: String,
     editVersionCode: String,
@@ -77,6 +80,8 @@ fun OverviewTab(
             .padding(vertical = SmithySpacing.section),
         verticalArrangement = Arrangement.spacedBy(SmithySpacing.section),
     ) {
+        // 体检放最前面：它回答的是「这个包值不值得动手」，比任何统计数字都靠前
+        health?.let { HealthCard(it) }
         Section("概况") { HeaderCard(sourceName, entryCount, meta) }
         // 改名与改版本放在最前：这是改包最高频的两件事
         Section("改名 / 改版本") {

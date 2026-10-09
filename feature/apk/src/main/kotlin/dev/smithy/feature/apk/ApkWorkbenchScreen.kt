@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -389,6 +391,7 @@ private fun ReadyContent(
                             meta = it,
                             sourceName = state.sourceName,
                             entryCount = state.entryCount,
+                            health = state.health,
                             editLabel = state.editLabel,
                             editVersionName = state.editVersionName,
                             editVersionCode = state.editVersionCode,
@@ -472,39 +475,72 @@ private fun ActionBar(state: WorkbenchUiState, vm: ApkWorkbenchViewModel) {
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(SmithySpacing.gap)) {
-                val idle = state.busy == null
-                // 按钮上带图标：这三步是一条链，图标让「现在走到哪一步」不必读字
-                OutlinedButton(
-                    onClick = vm::rebuild,
-                    enabled = idle && state.patches.isNotEmpty(),
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(SmithyIcons.Package, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("重打包")
-                }
+            val idle = state.busy == null
+            val hasChanges = state.patches.isNotEmpty()
+            val hasArtifact = state.rebuiltPath != null || state.signedPath != null
 
-                OutlinedButton(
-                    onClick = vm::sign,
-                    enabled = idle && state.rebuiltPath != null,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(SmithyIcons.Key, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("签名")
-                }
+            // 主按钮就是整条链：打包 → 签名 → 验证 → 装机。
+            // 顺序不可颠倒（签名签的是上一次打包的产物），而「让用户记住这件事」
+            // 本身就是设计缺陷 —— 所以默认只给这一个入口。
+            Button(
+                onClick = vm::buildSignInstall,
+                enabled = idle && hasChanges,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Icon(SmithyIcons.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(SmithySpacing.gap))
+                Text(if (state.product != null) "重新打包并装机" else "打包并装机")
+            }
 
-                Button(
-                    onClick = vm::install,
-                    enabled = idle && (state.signedPath != null || state.rebuiltPath != null),
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(SmithyIcons.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("安装")
-                }
+            // 分步入口降一档保留：排查问题时要单步跑（这一步失败还是那一步失败）
+            Row(
+                Modifier.fillMaxWidth().padding(top = 2.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                StepAction("只打包", idle && hasChanges, vm::rebuild)
+                StepDot()
+                StepAction("只签名", idle && state.rebuiltPath != null, vm::sign)
+                StepDot()
+                StepAction("只验证", idle && hasArtifact, vm::verifyProduct)
             }
         }
     }
+}
+
+/**
+ * 分步动作：文字按钮，不带底色。
+ *
+ * 和主按钮的层级差是刻意的 —— 它们不是「另一种做法」而是「同一件事拆开跑」，
+ * 做成第二个填色按钮会让人以为有两条路可选。
+ */
+@Composable
+private fun StepAction(label: String, enabled: Boolean, onClick: () -> Unit) {
+    val haptics = rememberSmithyHaptics()
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        color = if (enabled) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        },
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.small)
+            .clickable(enabled = enabled) {
+                haptics.tap()
+                onClick()
+            }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    )
+}
+
+/** 分步动作之间的分隔点：比竖线轻，只是把三个词分开。 */
+@Composable
+private fun StepDot() {
+    Text(
+        "·",
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }

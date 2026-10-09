@@ -54,6 +54,20 @@ internal fun PatchesTab(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize()) {
+        // 产物与验证放在改动列表**上面**：打包签名之后，用户最想知道的是
+        // 「这东西能装吗、装上去是不是我要的」，而不是又多了几条改动
+        state.product?.let { report ->
+            Spacer(Modifier.height(SmithySpacing.section))
+            ProductCard(report)
+            Spacer(Modifier.height(SmithySpacing.section))
+            ArtifactCard(
+                label = if (state.signedPath != null) "已签名" else "未签名",
+                path = report.apkPath,
+                sizeBytes = report.sizeBytes,
+                sha256 = report.sha256,
+            )
+        }
+
         Section("说明", Modifier.padding(top = SmithySpacing.section)) {
             Text(
                 "所有改动都记在这里，原包一个字节都没动。点「重打包」才会合并成新包；" +
